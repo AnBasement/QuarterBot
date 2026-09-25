@@ -1,0 +1,22 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [
+    "__pycache__",
+    ".pytest_cache",
+]
+
+[tool.ruff.lint]
+select = ["E", "F"]
+per-file-ignores = { "tests/*" = ["F401"] }
+
+[tool.mypy]
+python_version = "3.12"
+explicit_package_bases = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+# No type stubs exist for these third-party libraries.
+[[tool.mypy.overrides]]
+module = ["espn_api.*"]
+ignore_missing_imports = true

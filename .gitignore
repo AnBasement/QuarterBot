@@ -1,0 +1,15 @@
+.env
+credentials.json
+__pycache__/
+*.pyc
+*.log
+*.sqlite3
+.DS_Store
+/venv/
+TODO.md
+.coverage
+.venv/
+discord_ids.json
+.claude/
+CLAUDE.md
+custom_commands.json
