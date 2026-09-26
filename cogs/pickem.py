@@ -242,6 +242,7 @@ class Pickem(commands.Cog):
         self.last_reminder_sunday: date | None = None
         self.last_posted_week: int | None = None
         self.last_processed_week: int | None = None
+        self.last_exported_week: int | None = None
         self.state_loaded: bool = False
         self._state_dirty: bool = False
         task = self.reminder_scheduler()
@@ -560,22 +561,30 @@ class Pickem(commands.Cog):
         base_sheet = await asyncio.to_thread(get_sheet, PICKEM_SHEET_NAME)
         spreadsheet = base_sheet.spreadsheet
         try:
-            return await asyncio.to_thread(spreadsheet.worksheet, "State")
+            state_ws = await asyncio.to_thread(spreadsheet.worksheet, "State")
         except WorksheetNotFound:
             logger.info("Failed to find State sheet, creating new.")
             state_ws = await asyncio.to_thread(
-                spreadsheet.add_worksheet, title="State", rows=2, cols=2
+                spreadsheet.add_worksheet, title="State", rows=2, cols=3
             )
             await asyncio.to_thread(
-                state_ws.update, [["last_processed_week", "last_posted_week"]], "A1:B1"
+                state_ws.update,
+                [["last_processed_week", "last_posted_week", "last_exported_week"]],
+                "A1:C1",
             )
             return state_ws
+
+        if state_ws.col_count < 3:
+            # Tabs created before the pick lock have only two columns.
+            await asyncio.to_thread(state_ws.add_cols, 3 - state_ws.col_count)
+            await asyncio.to_thread(state_ws.update, [["last_exported_week"]], "C1")
+        return state_ws
 
     async def _load_state(self) -> None:
         """Loads processed and posted weeks from the State tab, so restarts don't repeat work."""
         try:
             state_ws = await self._get_state_sheet()
-            values = await asyncio.to_thread(state_ws.get, "A2:B2")
+            values = await asyncio.to_thread(state_ws.get, "A2:C2")
         except (
             gspread.exceptions.GSpreadException,
             requests.exceptions.RequestException,
@@ -588,10 +597,12 @@ class Pickem(commands.Cog):
         row = values[0] if values else []
         lpw = row[0] if len(row) > 0 else ""
         lpost = row[1] if len(row) > 1 else ""
+        lexp = row[2] if len(row) > 2 else ""
 
         try:
             self.last_processed_week = int(lpw) if lpw else None
             self.last_posted_week = int(lpost) if lpost else None
+            self.last_exported_week = int(lexp) if lexp else None
         except ValueError as exc:
             logger.error("Corrupt state data in sheet: %s (row=%s)", exc, row)
             await self._notify_admin(
@@ -601,9 +612,11 @@ class Pickem(commands.Cog):
 
         self.state_loaded = True
         logger.info(
-            "State loaded: last_processed_week=%s, last_posted_week=%s",
+            "State loaded: last_processed_week=%s, last_posted_week=%s, "
+            "last_exported_week=%s",
             self.last_processed_week,
             self.last_posted_week,
+            self.last_exported_week,
         )
 
     async def _save_state(self) -> bool:
@@ -626,9 +639,14 @@ class Pickem(commands.Cog):
                             if self.last_posted_week is not None
                             else ""
                         ),
+                        (
+                            self.last_exported_week
+                            if self.last_exported_week is not None
+                            else ""
+                        ),
                     ]
                 ],
-                "A2:B2",
+                "A2:C2",
             )
         except (
             gspread.exceptions.GSpreadException,
@@ -642,10 +660,13 @@ class Pickem(commands.Cog):
 
         self._state_dirty = False
         logger.info(
-            "State saved: last_processed_week=%s, last_posted_week=%s",
+            "State saved: last_processed_week=%s, last_posted_week=%s, "
+            "last_exported_week=%s",
             self.last_processed_week,
             self.last_posted_week,
+            self.last_exported_week,
         )
+
         return True
 
     async def _flush_pending_state(self) -> None:

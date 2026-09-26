@@ -25,6 +25,7 @@ def make_cog(**attrs):
     cog.last_reminder_sunday = None
     cog.last_posted_week = None
     cog.last_processed_week = None
+    cog.last_exported_week = None
     cog.state_loaded = False
     cog._state_dirty = False
     for key, value in attrs.items():
@@ -724,6 +725,21 @@ class TestLoadState:
     async def test_loads_existing_values(self):
         cog = make_cog()
         state_ws = MagicMock()
+        state_ws.get.return_value = [["3", "4", "4"]]
+        cog._get_state_sheet = AsyncMock(return_value=state_ws)
+
+        await cog._load_state()
+
+        assert cog.last_processed_week == 3
+        assert cog.last_posted_week == 4
+        assert cog.last_exported_week == 4
+        assert cog.state_loaded is True
+
+    @pytest.mark.asyncio
+    async def test_old_row_without_exported_week_loads(self):
+        """Before the first lock, C2 is empty and Google leaves it out of the row."""
+        cog = make_cog()
+        state_ws = MagicMock()
         state_ws.get.return_value = [["3", "4"]]
         cog._get_state_sheet = AsyncMock(return_value=state_ws)
 
@@ -731,6 +747,7 @@ class TestLoadState:
 
         assert cog.last_processed_week == 3
         assert cog.last_posted_week == 4
+        assert cog.last_exported_week is None
         assert cog.state_loaded is True
 
     @pytest.mark.asyncio
@@ -822,6 +839,7 @@ class TestSaveState:
             state_loaded=True,
             last_processed_week=0,
             last_posted_week=7,
+            last_exported_week=7,
             _state_dirty=True,
         )
         cog._get_state_sheet = AsyncMock(return_value=state_ws)
@@ -833,7 +851,7 @@ class TestSaveState:
         # gspread 6.x's update() takes (values, range_name), the values are
         # the first positional argument, not the second.
         written_values = state_ws.update.call_args.args[0]
-        assert written_values == [[0, 7]]  # 0 should be written as 0, not ""
+        assert written_values == [[0, 7, 7]]  # 0 should be written as 0, not ""
 
     @pytest.mark.asyncio
     async def test_failure_sets_dirty_flag_and_notifies_admin(self):
@@ -1105,23 +1123,45 @@ class TestGetStateSheet:
 
         assert result is new_ws
         new_ws.update.assert_called_once_with(
-            [["last_processed_week", "last_posted_week"]], "A1:B1"
+            [["last_processed_week", "last_posted_week", "last_exported_week"]],
+            "A1:C1",
         )
 
-    @pytest.mark.asyncio
-    async def test_reuses_existing_state_worksheet(self, monkeypatch):
-        base_sheet = MagicMock()
-        spreadsheet = MagicMock()
-        existing_ws = MagicMock()
-        base_sheet.spreadsheet = spreadsheet
-        spreadsheet.worksheet.return_value = existing_ws
-        monkeypatch.setattr("cogs.pickem.get_sheet", lambda name: base_sheet)
+        @pytest.mark.asyncio
+        async def test_reuses_existing_state_worksheet(self, monkeypatch):
+            base_sheet = MagicMock()
+            spreadsheet = MagicMock()
+            existing_ws = MagicMock()
+            existing_ws.col_count = 3
+            base_sheet.spreadsheet = spreadsheet
+            spreadsheet.worksheet.return_value = existing_ws
+            monkeypatch.setattr("cogs.pickem.get_sheet", lambda name: base_sheet)
 
-        cog = make_cog()
-        result = await cog._get_state_sheet()
+            cog = make_cog()
+            result = await cog._get_state_sheet()
 
-        assert result is existing_ws
-        spreadsheet.add_worksheet.assert_not_called()
+            assert result is existing_ws
+            spreadsheet.add_worksheet.assert_not_called()
+            existing_ws.add_cols.assert_not_called()
+
+        @pytest.mark.asyncio
+        async def test_adds_third_column_to_old_two_column_tab(self, monkeypatch):
+            """State tabs created before the pick lock have only two columns.
+            Without a third, every save to C2 would fail."""
+            base_sheet = MagicMock()
+            spreadsheet = MagicMock()
+            old_ws = MagicMock()
+            old_ws.col_count = 2
+            base_sheet.spreadsheet = spreadsheet
+            spreadsheet.worksheet.return_value = old_ws
+            monkeypatch.setattr("cogs.pickem.get_sheet", lambda name: base_sheet)
+
+            cog = make_cog()
+            result = await cog._get_state_sheet()
+
+            assert result is old_ws
+            old_ws.add_cols.assert_called_once_with(1)
+            old_ws.update.assert_called_once_with([["last_exported_week"]], "C1")
 
 
 # auto_post_scheduler
