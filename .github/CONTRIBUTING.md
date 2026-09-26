@@ -22,7 +22,7 @@ Contributions are welcome! Here are some guidelines for how you can help.
 3. Make your changes
 4. Write tests that cover them
 5. Run the checks below
-6. Commit with short, descriptive messages
+6. Commit using [Conventional Commits](https://www.conventionalcommits.org/): `type: short description`, e.g. `fix: stop duplicate reminders after a restart`. Common types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`. Add `!` after the type for a change that requires existing setups to change something (`feat!:`)
 7. Push to your fork
 8. Open a pull request against the main repository and fill in the template
 
