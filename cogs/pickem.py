@@ -864,7 +864,7 @@ class Pickem(commands.Cog):
         """Processes last week, then posts the new week's games. Runs forever."""
         await self.bot.wait_until_ready()
         game_channel = self._get_text_channel(GAME_CHANNEL_ID)
-        preik_channel = self._get_text_channel(REMINDER_CHANNEL_ID)
+        reminder_channel = self._get_text_channel(REMINDER_CHANNEL_ID)
 
         while True:
             # Wait for the state to load, rather than assume nothing was done and
@@ -1033,8 +1033,8 @@ class Pickem(commands.Cog):
                 for ev in events:
                     await game_channel.send(self._format_event(ev, game_channel.guild))
                 await game_channel.send(PICK_INSTRUCTIONS_MESSAGE)
-            if isinstance(preik_channel, discord.TextChannel):
-                await preik_channel.send(
+            if isinstance(reminder_channel, discord.TextChannel):
+                await reminder_channel.send(
                     WEEKLY_GAMES_POSTED_MESSAGE.format(
                         week=current_week, channel=GAME_CHANNEL_ID
                     )
