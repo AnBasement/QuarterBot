@@ -1135,41 +1135,41 @@ class TestGetStateSheet:
             "A1:C1",
         )
 
-        @pytest.mark.asyncio
-        async def test_reuses_existing_state_worksheet(self, monkeypatch):
-            base_sheet = MagicMock()
-            spreadsheet = MagicMock()
-            existing_ws = MagicMock()
-            existing_ws.col_count = 3
-            base_sheet.spreadsheet = spreadsheet
-            spreadsheet.worksheet.return_value = existing_ws
-            monkeypatch.setattr("cogs.pickem.get_sheet", lambda name: base_sheet)
+    @pytest.mark.asyncio
+    async def test_reuses_existing_state_worksheet(self, monkeypatch):
+        base_sheet = MagicMock()
+        spreadsheet = MagicMock()
+        existing_ws = MagicMock()
+        existing_ws.col_count = 3
+        base_sheet.spreadsheet = spreadsheet
+        spreadsheet.worksheet.return_value = existing_ws
+        monkeypatch.setattr("cogs.pickem.get_sheet", lambda name: base_sheet)
 
-            cog = make_cog()
-            result = await cog._get_state_sheet()
+        cog = make_cog()
+        result = await cog._get_state_sheet()
 
-            assert result is existing_ws
-            spreadsheet.add_worksheet.assert_not_called()
-            existing_ws.add_cols.assert_not_called()
+        assert result is existing_ws
+        spreadsheet.add_worksheet.assert_not_called()
+        existing_ws.add_cols.assert_not_called()
 
-        @pytest.mark.asyncio
-        async def test_adds_third_column_to_old_two_column_tab(self, monkeypatch):
-            """State tabs created before the pick lock have only two columns.
-            Without a third, every save to C2 would fail."""
-            base_sheet = MagicMock()
-            spreadsheet = MagicMock()
-            old_ws = MagicMock()
-            old_ws.col_count = 2
-            base_sheet.spreadsheet = spreadsheet
-            spreadsheet.worksheet.return_value = old_ws
-            monkeypatch.setattr("cogs.pickem.get_sheet", lambda name: base_sheet)
+    @pytest.mark.asyncio
+    async def test_adds_third_column_to_old_two_column_tab(self, monkeypatch):
+        """State tabs created before the pick lock have only two columns.
+        Without a third, every save to C2 would fail."""
+        base_sheet = MagicMock()
+        spreadsheet = MagicMock()
+        old_ws = MagicMock()
+        old_ws.col_count = 2
+        base_sheet.spreadsheet = spreadsheet
+        spreadsheet.worksheet.return_value = old_ws
+        monkeypatch.setattr("cogs.pickem.get_sheet", lambda name: base_sheet)
 
-            cog = make_cog()
-            result = await cog._get_state_sheet()
+        cog = make_cog()
+        result = await cog._get_state_sheet()
 
-            assert result is old_ws
-            old_ws.add_cols.assert_called_once_with(1)
-            old_ws.update.assert_called_once_with([["last_exported_week"]], "C1")
+        assert result is old_ws
+        old_ws.add_cols.assert_called_once_with(1)
+        old_ws.update.assert_called_once_with([["last_exported_week"]], "C1")
 
 
 # auto_post_scheduler
