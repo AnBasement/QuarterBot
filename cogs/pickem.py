@@ -861,16 +861,21 @@ class Pickem(commands.Cog):
             channel=channel, send=channel.send, bot=self.bot
         )
 
-        try:
-            logger.info("Running export for week %s", previous_week)
-            await self._export_impl(ctx, previous_week)
-        except Exception as exc:
-            # Broad on purpose: whatever fails in export, the scheduler loop must survive.
-            logger.error("Failed export for week %s: %s", previous_week, exc)
-            await self._notify_admin(
-                f"[pickem] Failed export for week {previous_week}: {exc}"
+        if self.last_exported_week == previous_week:
+            logger.info(
+                "Week %s was locked before kickoff; skipping export.", previous_week
             )
-            return False
+        else:
+            try:
+                logger.info("Running export for week %s", previous_week)
+                await self._export_impl(ctx, previous_week)
+            except Exception as exc:
+                # Broad on purpose: whatever fails in export, the scheduler loop must survive.
+                logger.error("Failed export for week %s: %s", previous_week, exc)
+                await self._notify_admin(
+                    f"[pickem] Failed export for week {previous_week}: {exc}"
+                )
+                return False
 
         try:
             logger.info("Running results for week %s", previous_week)

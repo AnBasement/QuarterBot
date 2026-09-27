@@ -1412,3 +1412,37 @@ class TestLockPicks:
         assert locked is False
         assert cog.last_exported_week == 4
         cog._notify_admin.assert_awaited_once()
+
+
+class TestTuesdayAfterLock:
+    def make_tuesday_cog(self, **attrs):
+        cog = make_cog(last_processed_week=2, **attrs)
+        cog._fetch_week_events = AsyncMock(return_value=[{"id": "1"}])
+        cog._export_impl = AsyncMock()
+        cog._results_impl = AsyncMock()
+        cog._save_state = AsyncMock(return_value=True)
+        return cog
+
+    @pytest.mark.asyncio
+    async def test_locked_week_is_scored_without_exporting_again(self):
+        """A second export would overwrite the frozen picks with late ones."""
+        cog = self.make_tuesday_cog(last_exported_week=3)
+        channel = MagicMock(spec=discord.TextChannel)
+
+        result = await cog._process_previous_week(current_week=4, channel=channel)
+
+        assert result is True
+        cog._export_impl.assert_not_awaited()
+        cog._results_impl.assert_awaited_once()
+        assert cog.last_processed_week == 3
+
+    @pytest.mark.asyncio
+    async def test_unlocked_week_is_exported_as_before(self):
+        cog = self.make_tuesday_cog(last_exported_week=2)
+        channel = MagicMock(spec=discord.TextChannel)
+
+        result = await cog._process_previous_week(current_week=4, channel=channel)
+
+        assert result is True
+        cog._export_impl.assert_awaited_once()
+        cog._results_impl.assert_awaited_once()
