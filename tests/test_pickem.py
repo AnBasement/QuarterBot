@@ -33,6 +33,7 @@ def make_cog(**attrs):
     cog.last_posted_week = None
     cog.last_processed_week = None
     cog.last_exported_week = None
+    cog._lock_missed_week = None
     cog.state_loaded = False
     cog._state_dirty = False
     for key, value in attrs.items():
@@ -1268,3 +1269,146 @@ class TestPickLockTime:
 
         assert lock_la == lock_oslo
         assert lock_la.hour == 9  # 10:00 kickoff in Los Angeles
+
+
+def make_lock_cog(**attrs):
+    """A cog in the middle of week 5, with its games posted and ESPN mocked."""
+    cog = make_cog(state_loaded=True, last_posted_week=5, last_exported_week=4)
+    cog._get_nfl_current_week = AsyncMock(return_value=5)
+    cog._fetch_week_events = AsyncMock(return_value=[SUNDAY_EARLY_GAME])
+    cog._lock_picks = AsyncMock(return_value=True)
+    cog._notify_admin = AsyncMock()
+    cog._get_text_channel = MagicMock(return_value=MagicMock(spec=discord.TextChannel))
+    for key, value in attrs.items():
+        setattr(cog, key, value)
+    return cog
+
+
+def sunday_at(hour, minute=0):
+    """Sunday 4 October 2026 in Oslo. Lock 18:00, kickoff 19:00."""
+    return OSLO.localize(datetime(2026, 10, 4, hour, minute))
+
+
+class TestPickLockRound:
+    @pytest.mark.asyncio
+    async def test_locks_inside_the_lock_window(self):
+        cog = make_lock_cog()
+
+        wait = await cog._pick_lock_round(sunday_at(18, 30))
+
+        cog._lock_picks.assert_awaited_once()
+        assert cog._lock_picks.call_args.args[0] == 5
+        assert wait == PICK_LOCK_CHECK_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_waits_at_most_an_hour_before_the_lock(self):
+        cog = make_lock_cog()
+
+        wait = await cog._pick_lock_round(sunday_at(15, 0))
+
+        cog._lock_picks.assert_not_awaited()
+        assert wait == PICK_LOCK_CHECK_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_wakes_exactly_at_the_lock_time(self):
+        cog = make_lock_cog()
+
+        wait = await cog._pick_lock_round(sunday_at(17, 45))
+
+        cog._lock_picks.assert_not_awaited()
+        assert wait == pytest.approx(15 * 60)
+
+    @pytest.mark.asyncio
+    async def test_already_locked_week_is_not_exported_again(self):
+        cog = make_lock_cog(last_exported_week=5)
+
+        await cog._pick_lock_round(sunday_at(18, 30))
+
+        cog._lock_picks.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_lock_when_this_weeks_games_are_not_posted(self):
+        """The export takes the newest game messages. If this week's games were
+        never posted, those are last week's, and a lock would overwrite last
+        week's scored picks with late ones."""
+        cog = make_lock_cog(last_posted_week=4)
+
+        await cog._pick_lock_round(sunday_at(18, 30))
+
+        cog._lock_picks.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_missed_lock_warns_admin_once(self):
+        cog = make_lock_cog()
+
+        await cog._pick_lock_round(sunday_at(19, 30))
+        await cog._pick_lock_round(sunday_at(20, 30))
+
+        cog._lock_picks.assert_not_awaited()
+        cog._notify_admin.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_failed_lock_is_retried_soon(self):
+        cog = make_lock_cog(_lock_picks=AsyncMock(return_value=False))
+
+        wait = await cog._pick_lock_round(sunday_at(18, 30))
+
+        assert wait == PICK_LOCK_RETRY_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_week_without_games_is_not_an_error(self):
+        """The Pro Bowl week has no games to pick."""
+        cog = make_lock_cog(
+            _fetch_week_events=AsyncMock(side_effect=NoEventsFoundError(22))
+        )
+
+        wait = await cog._pick_lock_round(sunday_at(18, 30))
+
+        cog._lock_picks.assert_not_awaited()
+        assert wait == PICK_LOCK_CHECK_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_waits_for_state_to_load(self):
+        cog = make_lock_cog(state_loaded=False)
+
+        await cog._pick_lock_round(sunday_at(18, 30))
+
+        cog._get_nfl_current_week.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sleeps_through_the_off_season(self):
+        cog = make_lock_cog()
+
+        wait = await cog._pick_lock_round(OSLO.localize(datetime(2026, 6, 1, 12, 0)))
+
+        cog._get_nfl_current_week.assert_not_awaited()
+        assert wait > 24 * 3600
+
+
+class TestLockPicks:
+    @pytest.mark.asyncio
+    async def test_success_marks_week_locked_and_saves(self):
+        cog = make_cog()
+        cog._export_impl = AsyncMock()
+        cog._save_state = AsyncMock(return_value=True)
+        channel = MagicMock(spec=discord.TextChannel)
+
+        locked = await cog._lock_picks(5, channel)
+
+        assert locked is True
+        assert cog.last_exported_week == 5
+        cog._save_state.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_failed_export_leaves_week_unlocked(self):
+        cog = make_cog(last_exported_week=4)
+        cog._export_impl = AsyncMock(side_effect=RuntimeError("Sheets down"))
+        cog._save_state = AsyncMock()
+        cog._notify_admin = AsyncMock()
+        channel = MagicMock(spec=discord.TextChannel)
+
+        locked = await cog._lock_picks(5, channel)
+
+        assert locked is False
+        assert cog.last_exported_week == 4
+        cog._notify_admin.assert_awaited_once()

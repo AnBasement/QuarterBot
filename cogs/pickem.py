@@ -273,12 +273,16 @@ class Pickem(commands.Cog):
         self.last_posted_week: int | None = None
         self.last_processed_week: int | None = None
         self.last_exported_week: int | None = None
+        self._lock_missed_week: int | None = None
         self.state_loaded: bool = False
         self._state_dirty: bool = False
         task = self.reminder_scheduler()
         self.reminder_task: asyncio.Task[None] = self.bot.loop.create_task(task)
         self.auto_post_task: asyncio.Task[None] = self.bot.loop.create_task(
             self.auto_post_scheduler()
+        )
+        self.pick_lock_task: asyncio.Task[None] = self.bot.loop.create_task(
+            self.pick_lock_scheduler()
         )
 
     def _get_text_channel(self, channel_id: int) -> discord.TextChannel | None:
@@ -313,6 +317,7 @@ class Pickem(commands.Cog):
         """Stops the background tasks."""
         self.reminder_task.cancel()
         self.auto_post_task.cancel()
+        self.pick_lock_task.cancel()
 
     @commands.command(name="games", aliases=["kamper"])
     @admin_only()
@@ -894,6 +899,99 @@ class Pickem(commands.Cog):
             self.last_processed_week,
         )
         return True
+
+    async def _lock_picks(self, week: int, channel: discord.TextChannel) -> bool:
+        """Exports the week's picks before kickoff and marks the week as locked.
+
+        Returns False if the export failed and should be retried.
+        """
+        ctx: _SendableContext = SimpleNamespace(
+            channel=channel, send=channel.send, bot=self.bot
+        )
+        try:
+            await self._export_impl(ctx, week)
+        except Exception as exc:
+            # Broad on purpose: whatever fails in export, the scheduler loop must survive.
+            logger.error("Failed to lock picks for week %s: %s", week, exc)
+            await self._notify_admin(
+                f"[pickem] Failed to lock picks for week {week}: {exc}"
+            )
+            return False
+
+        self.last_exported_week = week
+        await self._save_state()
+        logger.info("Picks locked for week %s", week)
+        return True
+
+    async def _pick_lock_round(self, now: datetime) -> float:
+        """One check of the pick lock. Returns seconds to wait before the next check."""
+        if not self.state_loaded:
+            # auto_post_scheduler loads the state; without it we can't know
+            # whether this week is already locked.
+            return PICK_LOCK_RETRY_SECONDS
+
+        in_season, _season_end, next_start = self._season_window(now)
+        if not in_season:
+            if next_start:
+                return max(60, (next_start - now).total_seconds())
+            return PICK_LOCK_CHECK_SECONDS
+
+        current_week = await self._get_nfl_current_week()
+        if self.last_exported_week == current_week:
+            return PICK_LOCK_CHECK_SECONDS  # already locked
+        if self.last_posted_week != current_week:
+            # This week's games aren't posted, so the export would pick up
+            # last week's messages instead.
+            return PICK_LOCK_CHECK_SECONDS
+
+        try:
+            events = await self._fetch_week_events(current_week)
+        except NoEventsFoundError:
+            return PICK_LOCK_CHECK_SECONDS  # e.g. the Pro Bowl week
+        times = pick_lock_time(events, current_week, self.league_tz)
+        if times is None:
+            return PICK_LOCK_CHECK_SECONDS
+        lock_time, first_kickoff = times
+
+        if now < lock_time:
+            # Wake at the lock time, but at least hourly, so a schedule change
+            # (a flexed game) is picked up.
+            seconds_left = (lock_time - now).total_seconds()
+            return max(1, min(seconds_left, PICK_LOCK_CHECK_SECONDS))
+
+        if now >= first_kickoff:
+            # Missed: the bot was down, or every attempt failed. The Tuesday run
+            # exports as before, so the week isn't lost, only not locked.
+            if self._lock_missed_week != current_week:
+                self._lock_missed_week = current_week
+                await self._notify_admin(
+                    f"[pickem] Picks for week {current_week} were not locked before "
+                    "kickoff. They'll be exported on Tuesday as usual."
+                )
+            return PICK_LOCK_CHECK_SECONDS
+
+        game_channel = self._get_text_channel(GAME_CHANNEL_ID)
+        if game_channel is None:
+            return PICK_LOCK_RETRY_SECONDS
+        locked = await self._lock_picks(current_week, game_channel)
+        return PICK_LOCK_CHECK_SECONDS if locked else PICK_LOCK_RETRY_SECONDS
+
+    async def pick_lock_scheduler(self) -> None:
+        """Locks each week's picks before the first Sunday game. Runs forever."""
+        await self.bot.wait_until_ready()
+        while True:
+            try:
+                wait_seconds = await self._pick_lock_round(datetime.now(self.league_tz))
+            except Exception as e:
+                # Broad on purpose: the scheduler loop must never die.
+                logger.exception(
+                    "Error in pick_lock_scheduler: %s. Retrying in 5 min.", e
+                )
+                await self._notify_admin(
+                    f"[pickem] Error in pick_lock_scheduler: {e}. Retrying in 5 min."
+                )
+                wait_seconds = ERROR_BACKOFF_SECONDS
+            await asyncio.sleep(wait_seconds)
 
     async def _start_from_current_week_if_first_run(self, current_week: int) -> None:
         """On a first start (empty State tab), treats earlier weeks as processed.
