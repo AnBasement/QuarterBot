@@ -9,7 +9,14 @@ import pytz
 import gspread.exceptions
 from gspread.exceptions import WorksheetNotFound
 
-from cogs.pickem import Pickem, is_pickable_game
+from cogs.pickem import (
+    PICK_LOCK_CHECK_SECONDS,
+    PICK_LOCK_RETRY_SECONDS,
+    Pickem,
+    is_pickable_game,
+    pick_lock_time,
+)
+from core.utils.quiet_hours import clamp_to_quiet_hours
 from core.errors import ExportError, NoEventsFoundError, SheetNotFoundError
 from data.channel_ids import GAME_CHANNEL_ID
 from data.teams import teams, get_team_emoji_by_name
@@ -1202,3 +1209,62 @@ async def test_scheduler_flushes_pending_state_before_guards(monkeypatch):
         await cog.auto_post_scheduler()
 
     assert flush_calls == [1]
+
+
+# Pick lock
+
+OSLO = pytz.timezone("Europe/Oslo")
+THURSDAY_GAME = {"date": "2026-10-01T23:15Z"}  # Thu 1 Oct, 20:15 US Eastern
+SUNDAY_EARLY_GAME = {
+    "date": "2026-10-04T17:00Z"
+}  # Sun 4 Oct, 13:00 Eastern, 19:00 Oslo
+SUNDAY_LATE_GAME = {"date": "2026-10-05T00:20Z"}  # Sun 4 Oct, 20:20 Eastern
+MONDAY_GAME = {"date": "2026-10-06T00:15Z"}  # Mon 5 Oct, 20:15 Eastern
+
+
+class TestPickLockTime:
+    def test_normal_week_locks_an_hour_before_first_sunday_game(self):
+        events = [THURSDAY_GAME, SUNDAY_EARLY_GAME, SUNDAY_LATE_GAME, MONDAY_GAME]
+
+        lock_time, first_kickoff = pick_lock_time(events, 5, OSLO)
+
+        assert first_kickoff == OSLO.localize(datetime(2026, 10, 4, 19, 0))
+        assert lock_time == OSLO.localize(datetime(2026, 10, 4, 18, 0))
+
+    def test_early_international_game_sets_the_lock(self):
+        london_game = {"date": "2026-10-04T13:30Z"}  # 09:30 Eastern, 15:30 Oslo
+        events = [SUNDAY_EARLY_GAME, london_game]
+
+        lock_time, _ = pick_lock_time(events, 5, OSLO)
+
+        assert lock_time == OSLO.localize(datetime(2026, 10, 4, 14, 30))
+
+    def test_playoff_week_locks_before_the_saturday_game(self):
+        saturday_game = {"date": "2027-01-09T21:30Z"}  # Sat 9 Jan, 16:30 Eastern
+        sunday_game = {"date": "2027-01-10T18:00Z"}
+
+        lock_time, first_kickoff = pick_lock_time(
+            [sunday_game, saturday_game], 19, OSLO
+        )
+
+        assert first_kickoff == OSLO.localize(datetime(2027, 1, 9, 22, 30))
+        assert lock_time == OSLO.localize(datetime(2027, 1, 9, 21, 30))
+
+    def test_super_bowl_week(self):
+        super_bowl = {"date": "2027-02-14T23:30Z"}  # Sun 14 Feb, 18:30 Eastern
+
+        lock_time, _ = pick_lock_time([super_bowl], 23, OSLO)
+
+        assert lock_time == OSLO.localize(datetime(2027, 2, 14, 23, 30))
+
+    def test_regular_week_without_sunday_games_has_no_lock(self):
+        assert pick_lock_time([THURSDAY_GAME, MONDAY_GAME], 5, OSLO) is None
+
+    def test_same_moment_in_any_timezone(self):
+        los_angeles = pytz.timezone("America/Los_Angeles")
+
+        lock_la, _ = pick_lock_time([SUNDAY_EARLY_GAME], 5, los_angeles)
+        lock_oslo, _ = pick_lock_time([SUNDAY_EARLY_GAME], 5, OSLO)
+
+        assert lock_la == lock_oslo
+        assert lock_la.hour == 9  # 10:00 kickoff in Los Angeles

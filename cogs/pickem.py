@@ -5,7 +5,7 @@ Google Sheets, scores them, and sends reminders before kickoff.
 """
 
 import asyncio
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, tzinfo
 import logging
 import re
 from types import SimpleNamespace
@@ -92,7 +92,12 @@ THURSDAY_WAKE_HOUR = 8
 THURSDAY_REMINDER_BUFFER_MINUTES = 120
 SUNDAY_WAKE_WEEKDAY = 5  # Saturday
 SUNDAY_WAKE_HOUR = 8
-SUNDAY_REMINDER_BUFFER_MINUTES = 60
+SUNDAY_REMINDER_BUFFER_MINUTES = 120
+
+# Pick lock
+PICK_LOCK_BUFFER_MINUTES = 60  # picks lock this long before the first game
+PICK_LOCK_CHECK_SECONDS = 3600  # normal wait between checks
+PICK_LOCK_RETRY_SECONDS = 300  # wait after a failed lock
 
 # Timeouts and retries
 SHEETS_API_TIMEOUT_SECONDS = 10
@@ -127,6 +132,31 @@ def is_pickable_game(ev: dict[str, Any]) -> bool:
     except (KeyError, IndexError, TypeError):
         return True
     return all(name in teams for name in names)
+
+
+def pick_lock_time(
+    events: list[dict[str, Any]], week: int, tz: tzinfo
+) -> tuple[datetime, datetime] | None:
+    """When a week's picks lock, and the first kickoff they lock for.
+
+    Regular season: an hour before the first Sunday game (by US Eastern
+    weekday, see NFL_SCHEDULE_TIMEZONE). Thursday and Saturday games are on the
+    honor system. Playoffs (week 19 and up): an hour before the week's first
+    game, since Wild Card and Divisional weekends start on Saturday.
+    Returns None if there's no game to lock for.
+    """
+    if week <= 18:
+        events = [
+            ev
+            for ev in events
+            if parse_espn_date(ev["date"]).astimezone(NFL_SCHEDULE_TIMEZONE).weekday()
+            == 6
+        ]
+    if not events:
+        return None
+    first_kickoff = min(parse_espn_date(ev["date"]) for ev in events).astimezone(tz)
+    lock_time = first_kickoff - timedelta(minutes=PICK_LOCK_BUFFER_MINUTES)
+    return lock_time, first_kickoff
 
 
 def strip_emoji(text: str) -> str:
