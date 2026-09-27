@@ -261,7 +261,7 @@ async def test_reminder_scheduler_sunday(monkeypatch):
 
     monkeypatch.setattr("cogs.pickem.asyncio.sleep", fast_sleep)
 
-    fixed_now = cog.league_tz.localize(datetime(2024, 9, 8, 17, 55))
+    fixed_now = cog.league_tz.localize(datetime(2024, 9, 8, 16, 55))
     from cogs import pickem as vt_mod
 
     class FixedDateTime(datetime):
@@ -576,9 +576,9 @@ class TestCheckSundayReminder:
 
         async def fetch_stub(target_weekday):
             assert target_weekday == 6
-            # Kickoff 2024-09-08 23:30 Europe/Oslo -> natural reminder
-            # (kickoff minus 1h) = 22:30, itself inside quiet hours.
-            return [{"date": "2024-09-08T21:30Z"}]
+            # Kickoff 2024-09-09 00:30 Europe/Oslo -> natural reminder
+            # (kickoff minus 2h) = 22:30, itself inside quiet hours.
+            return [{"date": "2024-09-08T22:30Z"}]
 
         cog._fetch_events_for_nfl_weekday = fetch_stub
 
@@ -1269,6 +1269,17 @@ class TestPickLockTime:
 
         assert lock_la == lock_oslo
         assert lock_la.hour == 9  # 10:00 kickoff in Los Angeles
+
+    def test_reminder_lands_before_lock_even_when_clamped(self):
+        """An early London game seen from Los Angeles: the reminder falls in
+        quiet hours and moves to 22:00 the evening before, still before the lock."""
+        los_angeles = pytz.timezone("America/Los_Angeles")
+        london_game = {"date": "2026-10-04T13:30Z"}  # 06:30 in Los Angeles
+
+        lock_time, first_kickoff = pick_lock_time([london_game], 5, los_angeles)
+        reminder = clamp_to_quiet_hours(first_kickoff - timedelta(minutes=120))
+
+        assert reminder < lock_time
 
 
 def make_lock_cog(**attrs):
