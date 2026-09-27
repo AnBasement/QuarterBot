@@ -92,12 +92,14 @@ THURSDAY_WAKE_HOUR = 8
 THURSDAY_REMINDER_BUFFER_MINUTES = 120
 SUNDAY_WAKE_WEEKDAY = 5  # Saturday
 SUNDAY_WAKE_HOUR = 8
-SUNDAY_REMINDER_BUFFER_MINUTES = 120
+SUNDAY_REMINDER_BUFFER_MINUTES = 60
 
-# Pick lock
-PICK_LOCK_BUFFER_MINUTES = 60  # picks lock this long before the first game
+# Pick lock: at the first kickoff, retried if it fails
 PICK_LOCK_CHECK_SECONDS = 3600  # normal wait between checks
-PICK_LOCK_RETRY_SECONDS = 300  # wait after a failed lock
+PICK_LOCK_FAST_RETRY_SECONDS = 60  # retry wait, the first minutes after kickoff
+PICK_LOCK_WARN_MINUTES = 10  # still not locked this long after kickoff: warn the admin
+PICK_LOCK_SLOW_RETRY_SECONDS = 300  # retry wait after the warning
+PICK_LOCK_GIVE_UP_MINUTES = 60  # stop trying; Tuesday exports as before
 
 # Timeouts and retries
 SHEETS_API_TIMEOUT_SECONDS = 10
@@ -136,13 +138,13 @@ def is_pickable_game(ev: dict[str, Any]) -> bool:
 
 def pick_lock_time(
     events: list[dict[str, Any]], week: int, tz: tzinfo
-) -> tuple[datetime, datetime] | None:
-    """When a week's picks lock, and the first kickoff they lock for.
+) -> datetime | None:
+    """When a week's picks lock: kickoff Sunday early window.
 
-    Regular season: an hour before the first Sunday game (by US Eastern
-    weekday, see NFL_SCHEDULE_TIMEZONE). Thursday and Saturday games are on the
-    honor system. Playoffs (week 19 and up): an hour before the week's first
-    game, since Wild Card and Divisional weekends start on Saturday.
+    Regular season: the first Sunday game (by US Eastern weekday, see
+    NFL_SCHEDULE_TIMEZONE). Thursday and Saturday games are on the honor system.
+    Playoffs (week 19 and up): the week's first game, since Wild Card and
+    Divisional weekends start on Saturday.
     Returns None if there's no game to lock for.
     """
     if week <= 18:
@@ -154,9 +156,7 @@ def pick_lock_time(
         ]
     if not events:
         return None
-    first_kickoff = min(parse_espn_date(ev["date"]) for ev in events).astimezone(tz)
-    lock_time = first_kickoff - timedelta(minutes=PICK_LOCK_BUFFER_MINUTES)
-    return lock_time, first_kickoff
+    return min(parse_espn_date(ev["date"]) for ev in events).astimezone(tz)
 
 
 def strip_emoji(text: str) -> str:
@@ -906,7 +906,7 @@ class Pickem(commands.Cog):
         return True
 
     async def _lock_picks(self, week: int, channel: discord.TextChannel) -> bool:
-        """Exports the week's picks before kickoff and marks the week as locked.
+        """Exports the week's picks at kickoff and marks the week as locked.
 
         Returns False if the export failed and should be retried.
         """
@@ -918,9 +918,6 @@ class Pickem(commands.Cog):
         except Exception as exc:
             # Broad on purpose: whatever fails in export, the scheduler loop must survive.
             logger.error("Failed to lock picks for week %s: %s", week, exc)
-            await self._notify_admin(
-                f"[pickem] Failed to lock picks for week {week}: {exc}"
-            )
             return False
 
         self.last_exported_week = week
@@ -933,7 +930,7 @@ class Pickem(commands.Cog):
         if not self.state_loaded:
             # auto_post_scheduler loads the state; without it we can't know
             # whether this week is already locked.
-            return PICK_LOCK_RETRY_SECONDS
+            return PICK_LOCK_FAST_RETRY_SECONDS
 
         in_season, _season_end, next_start = self._season_window(now)
         if not in_season:
@@ -953,36 +950,52 @@ class Pickem(commands.Cog):
             events = await self._fetch_week_events(current_week)
         except NoEventsFoundError:
             return PICK_LOCK_CHECK_SECONDS  # e.g. the Pro Bowl week
-        times = pick_lock_time(events, current_week, self.league_tz)
-        if times is None:
+        lock_time = pick_lock_time(events, current_week, self.league_tz)
+        if lock_time is None:
             return PICK_LOCK_CHECK_SECONDS
-        lock_time, first_kickoff = times
 
         if now < lock_time:
-            # Wake at the lock time, but at least hourly, so a schedule change
+            # Wake at kickoff, but at least hourly, so a schedule change
             # (a flexed game) is picked up.
             seconds_left = (lock_time - now).total_seconds()
             return max(1, min(seconds_left, PICK_LOCK_CHECK_SECONDS))
 
-        if now >= first_kickoff:
-            # Missed: the bot was down, or every attempt failed. The Tuesday run
-            # exports as before, so the week isn't lost, only not locked.
+        warn_at = lock_time + timedelta(minutes=PICK_LOCK_WARN_MINUTES)
+        give_up_at = lock_time + timedelta(minutes=PICK_LOCK_GIVE_UP_MINUTES)
+
+        if now >= give_up_at:
+            # Too late: a lock now would include picks made while watching. The
+            # Tuesday run exports as before, so the week isn't lost, only not locked.
+            # Warns here too, in case the bot was down the whole time.
             if self._lock_missed_week != current_week:
                 self._lock_missed_week = current_week
                 await self._notify_admin(
-                    f"[pickem] Picks for week {current_week} were not locked before "
+                    f"[pickem] Picks for week {current_week} weren't locked after "
                     "kickoff. They'll be exported on Tuesday as usual."
                 )
             return PICK_LOCK_CHECK_SECONDS
 
         game_channel = self._get_text_channel(GAME_CHANNEL_ID)
-        if game_channel is None:
-            return PICK_LOCK_RETRY_SECONDS
-        locked = await self._lock_picks(current_week, game_channel)
-        return PICK_LOCK_CHECK_SECONDS if locked else PICK_LOCK_RETRY_SECONDS
+        if game_channel is not None and await self._lock_picks(
+            current_week, game_channel
+        ):
+            return PICK_LOCK_CHECK_SECONDS
+
+        # Not locked yet: warn once after PICK_LOCK_WARN_MINUTES, keep retrying.
+        if now >= warn_at and self._lock_missed_week != current_week:
+            self._lock_missed_week = current_week
+            await self._notify_admin(
+                f"[pickem] Picks for week {current_week} still aren't locked, "
+                f"{PICK_LOCK_WARN_MINUTES} minutes after kickoff. Retrying until "
+                f"{give_up_at:%H:%M}; if that fails, they're exported on Tuesday "
+                "as usual."
+            )
+        if now < warn_at:
+            return PICK_LOCK_FAST_RETRY_SECONDS
+        return PICK_LOCK_SLOW_RETRY_SECONDS
 
     async def pick_lock_scheduler(self) -> None:
-        """Locks each week's picks before the first Sunday game. Runs forever."""
+        """Locks each week's picks at the first Sunday game. Runs forever."""
         await self.bot.wait_until_ready()
         while True:
             try:

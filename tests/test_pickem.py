@@ -11,7 +11,8 @@ from gspread.exceptions import WorksheetNotFound
 
 from cogs.pickem import (
     PICK_LOCK_CHECK_SECONDS,
-    PICK_LOCK_RETRY_SECONDS,
+    PICK_LOCK_FAST_RETRY_SECONDS,
+    PICK_LOCK_SLOW_RETRY_SECONDS,
     Pickem,
     is_pickable_game,
     pick_lock_time,
@@ -261,7 +262,7 @@ async def test_reminder_scheduler_sunday(monkeypatch):
 
     monkeypatch.setattr("cogs.pickem.asyncio.sleep", fast_sleep)
 
-    fixed_now = cog.league_tz.localize(datetime(2024, 9, 8, 16, 55))
+    fixed_now = cog.league_tz.localize(datetime(2024, 9, 8, 17, 55))
     from cogs import pickem as vt_mod
 
     class FixedDateTime(datetime):
@@ -576,9 +577,9 @@ class TestCheckSundayReminder:
 
         async def fetch_stub(target_weekday):
             assert target_weekday == 6
-            # Kickoff 2024-09-09 00:30 Europe/Oslo -> natural reminder
-            # (kickoff minus 2h) = 22:30, itself inside quiet hours.
-            return [{"date": "2024-09-08T22:30Z"}]
+            # Kickoff 2024-09-08 23:30 Europe/Oslo -> natural reminder
+            # (kickoff minus 1h) = 22:30, itself inside quiet hours.
+            return [{"date": "2024-09-08T21:30Z"}]
 
         cog._fetch_events_for_nfl_weekday = fetch_stub
 
@@ -1224,39 +1225,35 @@ MONDAY_GAME = {"date": "2026-10-06T00:15Z"}  # Mon 5 Oct, 20:15 Eastern
 
 
 class TestPickLockTime:
-    def test_normal_week_locks_an_hour_before_first_sunday_game(self):
+    def test_normal_week_locks_at_first_sunday_kickoff(self):
         events = [THURSDAY_GAME, SUNDAY_EARLY_GAME, SUNDAY_LATE_GAME, MONDAY_GAME]
 
-        lock_time, first_kickoff = pick_lock_time(events, 5, OSLO)
+        lock_time = pick_lock_time(events, 5, OSLO)
 
-        assert first_kickoff == OSLO.localize(datetime(2026, 10, 4, 19, 0))
-        assert lock_time == OSLO.localize(datetime(2026, 10, 4, 18, 0))
+        assert lock_time == OSLO.localize(datetime(2026, 10, 4, 19, 0))
 
     def test_early_international_game_sets_the_lock(self):
         london_game = {"date": "2026-10-04T13:30Z"}  # 09:30 Eastern, 15:30 Oslo
         events = [SUNDAY_EARLY_GAME, london_game]
 
-        lock_time, _ = pick_lock_time(events, 5, OSLO)
+        lock_time = pick_lock_time(events, 5, OSLO)
 
-        assert lock_time == OSLO.localize(datetime(2026, 10, 4, 14, 30))
+        assert lock_time == OSLO.localize(datetime(2026, 10, 4, 15, 30))
 
-    def test_playoff_week_locks_before_the_saturday_game(self):
+    def test_playoff_week_locks_at_the_saturday_game(self):
         saturday_game = {"date": "2027-01-09T21:30Z"}  # Sat 9 Jan, 16:30 Eastern
         sunday_game = {"date": "2027-01-10T18:00Z"}
 
-        lock_time, first_kickoff = pick_lock_time(
-            [sunday_game, saturday_game], 19, OSLO
-        )
+        lock_time = pick_lock_time([sunday_game, saturday_game], 19, OSLO)
 
-        assert first_kickoff == OSLO.localize(datetime(2027, 1, 9, 22, 30))
-        assert lock_time == OSLO.localize(datetime(2027, 1, 9, 21, 30))
+        assert lock_time == OSLO.localize(datetime(2027, 1, 9, 22, 30))
 
     def test_super_bowl_week(self):
         super_bowl = {"date": "2027-02-14T23:30Z"}  # Sun 14 Feb, 18:30 Eastern
 
-        lock_time, _ = pick_lock_time([super_bowl], 23, OSLO)
+        lock_time = pick_lock_time([super_bowl], 23, OSLO)
 
-        assert lock_time == OSLO.localize(datetime(2027, 2, 14, 23, 30))
+        assert lock_time == OSLO.localize(datetime(2027, 2, 15, 0, 30))
 
     def test_regular_week_without_sunday_games_has_no_lock(self):
         assert pick_lock_time([THURSDAY_GAME, MONDAY_GAME], 5, OSLO) is None
@@ -1264,11 +1261,11 @@ class TestPickLockTime:
     def test_same_moment_in_any_timezone(self):
         los_angeles = pytz.timezone("America/Los_Angeles")
 
-        lock_la, _ = pick_lock_time([SUNDAY_EARLY_GAME], 5, los_angeles)
-        lock_oslo, _ = pick_lock_time([SUNDAY_EARLY_GAME], 5, OSLO)
+        lock_la = pick_lock_time([SUNDAY_EARLY_GAME], 5, los_angeles)
+        lock_oslo = pick_lock_time([SUNDAY_EARLY_GAME], 5, OSLO)
 
         assert lock_la == lock_oslo
-        assert lock_la.hour == 9  # 10:00 kickoff in Los Angeles
+        assert lock_la.hour == 10  # 10:00 kickoff in Los Angeles
 
     def test_reminder_lands_before_lock_even_when_clamped(self):
         """An early London game seen from Los Angeles: the reminder falls in
@@ -1276,8 +1273,8 @@ class TestPickLockTime:
         los_angeles = pytz.timezone("America/Los_Angeles")
         london_game = {"date": "2026-10-04T13:30Z"}  # 06:30 in Los Angeles
 
-        lock_time, first_kickoff = pick_lock_time([london_game], 5, los_angeles)
-        reminder = clamp_to_quiet_hours(first_kickoff - timedelta(minutes=120))
+        lock_time = pick_lock_time([london_game], 5, los_angeles)
+        reminder = clamp_to_quiet_hours(lock_time - timedelta(minutes=60))
 
         assert reminder < lock_time
 
@@ -1296,23 +1293,23 @@ def make_lock_cog(**attrs):
 
 
 def sunday_at(hour, minute=0):
-    """Sunday 4 October 2026 in Oslo. Lock 18:00, kickoff 19:00."""
+    """Sunday 4 October 2026 in Oslo. Kickoff and lock at 19:00."""
     return OSLO.localize(datetime(2026, 10, 4, hour, minute))
 
 
 class TestPickLockRound:
     @pytest.mark.asyncio
-    async def test_locks_inside_the_lock_window(self):
+    async def test_locks_at_kickoff(self):
         cog = make_lock_cog()
 
-        wait = await cog._pick_lock_round(sunday_at(18, 30))
+        wait = await cog._pick_lock_round(sunday_at(19, 0))
 
         cog._lock_picks.assert_awaited_once()
         assert cog._lock_picks.call_args.args[0] == 5
         assert wait == PICK_LOCK_CHECK_SECONDS
 
     @pytest.mark.asyncio
-    async def test_waits_at_most_an_hour_before_the_lock(self):
+    async def test_waits_at_most_an_hour_before_kickoff(self):
         cog = make_lock_cog()
 
         wait = await cog._pick_lock_round(sunday_at(15, 0))
@@ -1321,10 +1318,10 @@ class TestPickLockRound:
         assert wait == PICK_LOCK_CHECK_SECONDS
 
     @pytest.mark.asyncio
-    async def test_wakes_exactly_at_the_lock_time(self):
+    async def test_wakes_exactly_at_kickoff(self):
         cog = make_lock_cog()
 
-        wait = await cog._pick_lock_round(sunday_at(17, 45))
+        wait = await cog._pick_lock_round(sunday_at(18, 45))
 
         cog._lock_picks.assert_not_awaited()
         assert wait == pytest.approx(15 * 60)
@@ -1333,7 +1330,7 @@ class TestPickLockRound:
     async def test_already_locked_week_is_not_exported_again(self):
         cog = make_lock_cog(last_exported_week=5)
 
-        await cog._pick_lock_round(sunday_at(18, 30))
+        await cog._pick_lock_round(sunday_at(19, 0))
 
         cog._lock_picks.assert_not_awaited()
 
@@ -1344,27 +1341,50 @@ class TestPickLockRound:
         week's scored picks with late ones."""
         cog = make_lock_cog(last_posted_week=4)
 
-        await cog._pick_lock_round(sunday_at(18, 30))
+        await cog._pick_lock_round(sunday_at(19, 0))
 
         cog._lock_picks.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_missed_lock_warns_admin_once(self):
-        cog = make_lock_cog()
+    async def test_failed_lock_is_retried_every_minute_at_first(self):
+        cog = make_lock_cog(_lock_picks=AsyncMock(return_value=False))
 
-        await cog._pick_lock_round(sunday_at(19, 30))
-        await cog._pick_lock_round(sunday_at(20, 30))
+        wait = await cog._pick_lock_round(sunday_at(19, 5))
 
-        cog._lock_picks.assert_not_awaited()
+        assert wait == PICK_LOCK_FAST_RETRY_SECONDS
+        cog._notify_admin.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_warns_admin_once_after_ten_minutes(self):
+        cog = make_lock_cog(_lock_picks=AsyncMock(return_value=False))
+
+        wait = await cog._pick_lock_round(sunday_at(19, 10))
+        await cog._pick_lock_round(sunday_at(19, 15))
+
+        assert wait == PICK_LOCK_SLOW_RETRY_SECONDS
+        assert cog._lock_picks.await_count == 2  # still retrying
         cog._notify_admin.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_failed_lock_is_retried_soon(self):
-        cog = make_lock_cog(_lock_picks=AsyncMock(return_value=False))
+    async def test_gives_up_an_hour_after_kickoff(self):
+        cog = make_lock_cog(_lock_missed_week=5)  # already warned at 19:10
 
-        wait = await cog._pick_lock_round(sunday_at(18, 30))
+        wait = await cog._pick_lock_round(sunday_at(20, 0))
 
-        assert wait == PICK_LOCK_RETRY_SECONDS
+        cog._lock_picks.assert_not_awaited()
+        cog._notify_admin.assert_not_awaited()
+        assert wait == PICK_LOCK_CHECK_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_bot_down_past_the_hour_warns_once(self):
+        """If the bot never got to try, the admin still hears about it, once."""
+        cog = make_lock_cog()
+
+        await cog._pick_lock_round(sunday_at(20, 10))
+        await cog._pick_lock_round(sunday_at(21, 10))
+
+        cog._lock_picks.assert_not_awaited()
+        cog._notify_admin.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_week_without_games_is_not_an_error(self):
@@ -1373,7 +1393,7 @@ class TestPickLockRound:
             _fetch_week_events=AsyncMock(side_effect=NoEventsFoundError(22))
         )
 
-        wait = await cog._pick_lock_round(sunday_at(18, 30))
+        wait = await cog._pick_lock_round(sunday_at(19, 0))
 
         cog._lock_picks.assert_not_awaited()
         assert wait == PICK_LOCK_CHECK_SECONDS
@@ -1382,7 +1402,7 @@ class TestPickLockRound:
     async def test_waits_for_state_to_load(self):
         cog = make_lock_cog(state_loaded=False)
 
-        await cog._pick_lock_round(sunday_at(18, 30))
+        await cog._pick_lock_round(sunday_at(19, 0))
 
         cog._get_nfl_current_week.assert_not_awaited()
 
@@ -1422,7 +1442,7 @@ class TestLockPicks:
 
         assert locked is False
         assert cog.last_exported_week == 4
-        cog._notify_admin.assert_awaited_once()
+        cog._notify_admin.assert_not_awaited()  # logged only; the round warns once
 
 
 class TestTuesdayAfterLock:
