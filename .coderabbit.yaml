@@ -8,6 +8,9 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
   path_instructions:
     - path: "cogs/**/*.py"
       instructions: >-
