@@ -5,7 +5,7 @@ Google Sheets, scores them, and sends reminders before kickoff.
 """
 
 import asyncio
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, tzinfo
 import logging
 import re
 from types import SimpleNamespace
@@ -94,6 +94,13 @@ SUNDAY_WAKE_WEEKDAY = 5  # Saturday
 SUNDAY_WAKE_HOUR = 8
 SUNDAY_REMINDER_BUFFER_MINUTES = 60
 
+# Pick lock: at the first kickoff, retried if it fails
+PICK_LOCK_CHECK_SECONDS = 3600  # normal wait between checks
+PICK_LOCK_FAST_RETRY_SECONDS = 60  # retry wait, the first minutes after kickoff
+PICK_LOCK_WARN_MINUTES = 10  # still not locked this long after kickoff: warn the admin
+PICK_LOCK_SLOW_RETRY_SECONDS = 300  # retry wait after the warning
+PICK_LOCK_GIVE_UP_MINUTES = 60  # stop trying; Tuesday exports as before
+
 # Timeouts and retries
 SHEETS_API_TIMEOUT_SECONDS = 10
 ESPN_API_TIMEOUT_SECONDS = 10
@@ -127,6 +134,29 @@ def is_pickable_game(ev: dict[str, Any]) -> bool:
     except (KeyError, IndexError, TypeError):
         return True
     return all(name in teams for name in names)
+
+
+def pick_lock_time(
+    events: list[dict[str, Any]], week: int, tz: tzinfo
+) -> datetime | None:
+    """When a week's picks lock: kickoff Sunday early window.
+
+    Regular season: the first Sunday game (by US Eastern weekday, see
+    NFL_SCHEDULE_TIMEZONE). Thursday and Saturday games are on the honor system.
+    Playoffs (week 19 and up): the week's first game, since Wild Card and
+    Divisional weekends start on Saturday.
+    Returns None if there's no game to lock for.
+    """
+    if week <= 18:
+        events = [
+            ev
+            for ev in events
+            if parse_espn_date(ev["date"]).astimezone(NFL_SCHEDULE_TIMEZONE).weekday()
+            == 6
+        ]
+    if not events:
+        return None
+    return min(parse_espn_date(ev["date"]) for ev in events).astimezone(tz)
 
 
 def strip_emoji(text: str) -> str:
@@ -242,12 +272,17 @@ class Pickem(commands.Cog):
         self.last_reminder_sunday: date | None = None
         self.last_posted_week: int | None = None
         self.last_processed_week: int | None = None
+        self.last_exported_week: int | None = None
+        self._lock_missed_week: int | None = None
         self.state_loaded: bool = False
         self._state_dirty: bool = False
         task = self.reminder_scheduler()
         self.reminder_task: asyncio.Task[None] = self.bot.loop.create_task(task)
         self.auto_post_task: asyncio.Task[None] = self.bot.loop.create_task(
             self.auto_post_scheduler()
+        )
+        self.pick_lock_task: asyncio.Task[None] = self.bot.loop.create_task(
+            self.pick_lock_scheduler()
         )
 
     def _get_text_channel(self, channel_id: int) -> discord.TextChannel | None:
@@ -282,6 +317,7 @@ class Pickem(commands.Cog):
         """Stops the background tasks."""
         self.reminder_task.cancel()
         self.auto_post_task.cancel()
+        self.pick_lock_task.cancel()
 
     @commands.command(name="games", aliases=["kamper"])
     @admin_only()
@@ -560,22 +596,30 @@ class Pickem(commands.Cog):
         base_sheet = await asyncio.to_thread(get_sheet, PICKEM_SHEET_NAME)
         spreadsheet = base_sheet.spreadsheet
         try:
-            return await asyncio.to_thread(spreadsheet.worksheet, "State")
+            state_ws = await asyncio.to_thread(spreadsheet.worksheet, "State")
         except WorksheetNotFound:
             logger.info("Failed to find State sheet, creating new.")
             state_ws = await asyncio.to_thread(
-                spreadsheet.add_worksheet, title="State", rows=2, cols=2
+                spreadsheet.add_worksheet, title="State", rows=2, cols=3
             )
             await asyncio.to_thread(
-                state_ws.update, [["last_processed_week", "last_posted_week"]], "A1:B1"
+                state_ws.update,
+                [["last_processed_week", "last_posted_week", "last_exported_week"]],
+                "A1:C1",
             )
             return state_ws
+
+        if state_ws.col_count < 3:
+            # Tabs created before the pick lock have only two columns.
+            await asyncio.to_thread(state_ws.add_cols, 3 - state_ws.col_count)
+            await asyncio.to_thread(state_ws.update, [["last_exported_week"]], "C1")
+        return state_ws
 
     async def _load_state(self) -> None:
         """Loads processed and posted weeks from the State tab, so restarts don't repeat work."""
         try:
             state_ws = await self._get_state_sheet()
-            values = await asyncio.to_thread(state_ws.get, "A2:B2")
+            values = await asyncio.to_thread(state_ws.get, "A2:C2")
         except (
             gspread.exceptions.GSpreadException,
             requests.exceptions.RequestException,
@@ -588,10 +632,12 @@ class Pickem(commands.Cog):
         row = values[0] if values else []
         lpw = row[0] if len(row) > 0 else ""
         lpost = row[1] if len(row) > 1 else ""
+        lexp = row[2] if len(row) > 2 else ""
 
         try:
             self.last_processed_week = int(lpw) if lpw else None
             self.last_posted_week = int(lpost) if lpost else None
+            self.last_exported_week = int(lexp) if lexp else None
         except ValueError as exc:
             logger.error("Corrupt state data in sheet: %s (row=%s)", exc, row)
             await self._notify_admin(
@@ -601,9 +647,11 @@ class Pickem(commands.Cog):
 
         self.state_loaded = True
         logger.info(
-            "State loaded: last_processed_week=%s, last_posted_week=%s",
+            "State loaded: last_processed_week=%s, last_posted_week=%s, "
+            "last_exported_week=%s",
             self.last_processed_week,
             self.last_posted_week,
+            self.last_exported_week,
         )
 
     async def _save_state(self) -> bool:
@@ -626,9 +674,14 @@ class Pickem(commands.Cog):
                             if self.last_posted_week is not None
                             else ""
                         ),
+                        (
+                            self.last_exported_week
+                            if self.last_exported_week is not None
+                            else ""
+                        ),
                     ]
                 ],
-                "A2:B2",
+                "A2:C2",
             )
         except (
             gspread.exceptions.GSpreadException,
@@ -642,10 +695,13 @@ class Pickem(commands.Cog):
 
         self._state_dirty = False
         logger.info(
-            "State saved: last_processed_week=%s, last_posted_week=%s",
+            "State saved: last_processed_week=%s, last_posted_week=%s, "
+            "last_exported_week=%s",
             self.last_processed_week,
             self.last_posted_week,
+            self.last_exported_week,
         )
+
         return True
 
     async def _flush_pending_state(self) -> None:
@@ -805,16 +861,21 @@ class Pickem(commands.Cog):
             channel=channel, send=channel.send, bot=self.bot
         )
 
-        try:
-            logger.info("Running export for week %s", previous_week)
-            await self._export_impl(ctx, previous_week)
-        except Exception as exc:
-            # Broad on purpose: whatever fails in export, the scheduler loop must survive.
-            logger.error("Failed export for week %s: %s", previous_week, exc)
-            await self._notify_admin(
-                f"[pickem] Failed export for week {previous_week}: {exc}"
+        if self.last_exported_week == previous_week:
+            logger.info(
+                "Week %s was locked before kickoff; skipping export.", previous_week
             )
-            return False
+        else:
+            try:
+                logger.info("Running export for week %s", previous_week)
+                await self._export_impl(ctx, previous_week)
+            except Exception as exc:
+                # Broad on purpose: whatever fails in export, the scheduler loop must survive.
+                logger.error("Failed export for week %s: %s", previous_week, exc)
+                await self._notify_admin(
+                    f"[pickem] Failed export for week {previous_week}: {exc}"
+                )
+                return False
 
         try:
             logger.info("Running results for week %s", previous_week)
@@ -843,6 +904,121 @@ class Pickem(commands.Cog):
             self.last_processed_week,
         )
         return True
+
+    async def _lock_picks(self, week: int, channel: discord.TextChannel) -> bool:
+        """Exports the week's picks at kickoff and marks the week as locked.
+
+        Returns False if the export failed and should be retried.
+        """
+        ctx: _SendableContext = SimpleNamespace(
+            channel=channel, send=channel.send, bot=self.bot
+        )
+        try:
+            await self._export_impl(ctx, week)
+        except (
+            ExportError,
+            discord.HTTPException,
+            gspread.exceptions.GSpreadException,
+            requests.exceptions.RequestException,
+        ) as exc:
+            # Expected failures (Google, Discord): logged, retried by the round.
+            logger.error("Failed to lock picks for week %s: %s", week, exc)
+            return False
+
+        self.last_exported_week = week
+        await self._save_state()
+        logger.info("Picks locked for week %s", week)
+        return True
+
+    async def _pick_lock_round(self, now: datetime) -> float:
+        """One check of the pick lock. Returns seconds to wait before the next check."""
+        if not self.state_loaded:
+            # auto_post_scheduler loads the state; without it we can't know
+            # whether this week is already locked.
+            return PICK_LOCK_FAST_RETRY_SECONDS
+
+        in_season, _season_end, next_start = self._season_window(now)
+        if not in_season:
+            if next_start:
+                return max(60, (next_start - now).total_seconds())
+            return PICK_LOCK_CHECK_SECONDS
+
+        current_week = await self._get_nfl_current_week()
+        if self.last_exported_week == current_week:
+            return PICK_LOCK_CHECK_SECONDS  # already locked
+        if self.last_posted_week != current_week:
+            # This week's games aren't posted, so the export would pick up
+            # last week's messages instead.
+            return PICK_LOCK_CHECK_SECONDS
+
+        try:
+            events = await self._fetch_week_events(current_week)
+        except NoEventsFoundError:
+            return PICK_LOCK_CHECK_SECONDS  # e.g. the Pro Bowl week
+        except APIFetchError as exc:
+            # log and retry soon, no admin message.
+            logger.warning("Pick lock couldn't reach ESPN: %s", exc)
+            return PICK_LOCK_SLOW_RETRY_SECONDS
+        lock_time = pick_lock_time(events, current_week, self.league_tz)
+        if lock_time is None:
+            return PICK_LOCK_CHECK_SECONDS
+
+        if now < lock_time:
+            # Wake at kickoff, but at least hourly, so a schedule change
+            # (a flexed game) is picked up.
+            seconds_left = (lock_time - now).total_seconds()
+            return max(1, min(seconds_left, PICK_LOCK_CHECK_SECONDS))
+
+        warn_at = lock_time + timedelta(minutes=PICK_LOCK_WARN_MINUTES)
+        give_up_at = lock_time + timedelta(minutes=PICK_LOCK_GIVE_UP_MINUTES)
+
+        if now >= give_up_at:
+            # Too late: a lock now would include picks made while watching. The
+            # Tuesday run exports as before, so the week isn't lost, only not locked.
+            # Warns here too, in case the bot was down the whole time.
+            if self._lock_missed_week != current_week:
+                self._lock_missed_week = current_week
+                await self._notify_admin(
+                    f"[pickem] Picks for week {current_week} weren't locked after "
+                    "kickoff. They'll be exported on Tuesday as usual."
+                )
+            return PICK_LOCK_CHECK_SECONDS
+
+        game_channel = self._get_text_channel(GAME_CHANNEL_ID)
+        if game_channel is not None and await self._lock_picks(
+            current_week, game_channel
+        ):
+            return PICK_LOCK_CHECK_SECONDS
+
+        # Not locked yet: warn once after PICK_LOCK_WARN_MINUTES, keep retrying.
+        if now >= warn_at and self._lock_missed_week != current_week:
+            self._lock_missed_week = current_week
+            await self._notify_admin(
+                f"[pickem] Picks for week {current_week} still aren't locked, "
+                f"{PICK_LOCK_WARN_MINUTES} minutes after kickoff. Retrying until "
+                f"{give_up_at:%H:%M}; if that fails, they're exported on Tuesday "
+                "as usual."
+            )
+        if now < warn_at:
+            return PICK_LOCK_FAST_RETRY_SECONDS
+        return PICK_LOCK_SLOW_RETRY_SECONDS
+
+    async def pick_lock_scheduler(self) -> None:
+        """Locks each week's picks at the first Sunday game. Runs forever."""
+        await self.bot.wait_until_ready()
+        while True:
+            try:
+                wait_seconds = await self._pick_lock_round(datetime.now(self.league_tz))
+            except Exception as e:
+                # Broad on purpose: the scheduler loop must never die.
+                logger.exception(
+                    "Error in pick_lock_scheduler: %s. Retrying in 5 min.", e
+                )
+                await self._notify_admin(
+                    f"[pickem] Error in pick_lock_scheduler: {e}. Retrying in 5 min."
+                )
+                wait_seconds = ERROR_BACKOFF_SECONDS
+            await asyncio.sleep(wait_seconds)
 
     async def _start_from_current_week_if_first_run(self, current_week: int) -> None:
         """On a first start (empty State tab), treats earlier weeks as processed.

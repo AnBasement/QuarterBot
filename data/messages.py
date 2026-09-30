@@ -35,7 +35,7 @@ THURSDAY_GAME_REMINDER_MESSAGE = _message(
 )
 SUNDAY_GAME_REMINDER_MESSAGE = _message(
     "SUNDAY_GAME_REMINDER_MESSAGE",
-    "@everyone Early window starting soon, don't forget <#{channel}>",
+    "@everyone Picks lock at kickoff, don't forget <#{channel}>",
 )
 PICK_INSTRUCTIONS_MESSAGE = _message(
     "PICK_INSTRUCTIONS_MESSAGE",

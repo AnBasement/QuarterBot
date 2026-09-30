@@ -6,6 +6,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 
 ## [Unreleased]
 
+### Added
+- Picks lock automatically at the first Sunday kickoff (the first game of the week in the playoffs): they're exported to the sheet then, so later reactions don't count. Thursday and Saturday games are on the honor system. A failed lock is retried for an hour, and the admin channel is told once if it still hasn't worked after 10 minutes. If it never works, picks are exported on Tuesday as before
+- The `State` tab gets a third column, `last_exported_week`, added automatically to existing tabs
+
+### Changed
+- The Sunday reminder's default text says that picks lock at kickoff
+- The Tuesday run only scores weeks that were locked; it no longer exports them again
+- ESPN or Google hiccups during the pick lock are retried quietly instead of posting to the admin channel on every attempt
+
 ## [1.0.0] - 25-09-2026
 
 The first public release. Before this, the bot ran privately for one league.
