@@ -915,8 +915,13 @@ class Pickem(commands.Cog):
         )
         try:
             await self._export_impl(ctx, week)
-        except Exception as exc:
-            # Broad on purpose: whatever fails in export, the scheduler loop must survive.
+        except (
+            ExportError,
+            discord.HTTPException,
+            gspread.exceptions.GSpreadException,
+            requests.exceptions.RequestException,
+        ) as exc:
+            # Expected failures (Google, Discord): logged, retried by the round.
             logger.error("Failed to lock picks for week %s: %s", week, exc)
             return False
 
@@ -950,6 +955,10 @@ class Pickem(commands.Cog):
             events = await self._fetch_week_events(current_week)
         except NoEventsFoundError:
             return PICK_LOCK_CHECK_SECONDS  # e.g. the Pro Bowl week
+        except APIFetchError as exc:
+            # log and retry soon, no admin message.
+            logger.warning("Pick lock couldn't reach ESPN: %s", exc)
+            return PICK_LOCK_SLOW_RETRY_SECONDS
         lock_time = pick_lock_time(events, current_week, self.league_tz)
         if lock_time is None:
             return PICK_LOCK_CHECK_SECONDS

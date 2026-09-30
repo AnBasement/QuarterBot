@@ -18,7 +18,12 @@ from cogs.pickem import (
     pick_lock_time,
 )
 from core.utils.quiet_hours import clamp_to_quiet_hours
-from core.errors import ExportError, NoEventsFoundError, SheetNotFoundError
+from core.errors import (
+    APIFetchError,
+    ExportError,
+    NoEventsFoundError,
+    SheetNotFoundError,
+)
 from data.channel_ids import GAME_CHANNEL_ID
 from data.teams import teams, get_team_emoji_by_name
 from data.messages import THURSDAY_GAME_REMINDER_MESSAGE, SUNDAY_GAME_REMINDER_MESSAGE
@@ -1399,6 +1404,21 @@ class TestPickLockRound:
         assert wait == PICK_LOCK_CHECK_SECONDS
 
     @pytest.mark.asyncio
+    async def test_espn_outage_is_retried_quietly(self):
+        """ESPN hiccups are expected: no admin message, just a retry soon."""
+        cog = make_lock_cog(
+            _fetch_week_events=AsyncMock(
+                side_effect=APIFetchError("scoreboard", Exception("ESPN down"))
+            )
+        )
+
+        wait = await cog._pick_lock_round(sunday_at(19, 0))
+
+        cog._lock_picks.assert_not_awaited()
+        cog._notify_admin.assert_not_awaited()
+        assert wait == PICK_LOCK_SLOW_RETRY_SECONDS
+
+    @pytest.mark.asyncio
     async def test_waits_for_state_to_load(self):
         cog = make_lock_cog(state_loaded=False)
 
@@ -1433,7 +1453,7 @@ class TestLockPicks:
     @pytest.mark.asyncio
     async def test_failed_export_leaves_week_unlocked(self):
         cog = make_cog(last_exported_week=4)
-        cog._export_impl = AsyncMock(side_effect=RuntimeError("Sheets down"))
+        cog._export_impl = AsyncMock(side_effect=ExportError("Sheets down"))
         cog._save_state = AsyncMock()
         cog._notify_admin = AsyncMock()
         channel = MagicMock(spec=discord.TextChannel)
