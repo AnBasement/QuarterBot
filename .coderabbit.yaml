@@ -1,0 +1,25 @@
+# CodeRabbit review settings: https://docs.coderabbit.ai/reference/configuration
+language: en-US
+reviews:
+  profile: chill
+  poem: false
+  sequence_diagrams: false
+  collapse_walkthrough: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_instructions:
+    - path: "cogs/**/*.py"
+      instructions: >-
+        Broad `except Exception` is allowed only at scheduler-loop boundaries,
+        with a comment explaining why. Expect specific exceptions elsewhere.
+        espn_api calls must go through asyncio.to_thread. With pytz, datetimes
+        must be created with tz.localize(datetime(...)), never tzinfo=tz.
+        gspread 6: worksheet.update(values, range), values first.
+    - path: "data/config.py"
+      instructions: >-
+        The *_SHEET_LABEL values are data the bot writes and later searches
+        for in the spreadsheet, not display text. Don't suggest rewording them.
+    - path: "data/messages.py"
+      instructions: >-
+        Every message default must match .env.example exactly; a test checks this.
