@@ -15,6 +15,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 - The Tuesday run only scores weeks that were locked; it no longer exports them again
 - ESPN or Google hiccups during the pick lock are retried quietly instead of posting to the admin channel on every attempt
 
+### Fixed
+- `!ppr` froze the whole bot while Google answered some of its spreadsheet calls. They now run in the background, and the list of tabs is fetched once instead of twice
+- A Google hiccup while the bot started disabled `!ppr` until the next restart. The league spreadsheet is now opened the first time `!ppr` needs it
+
 ## [1.0.0] - 25-09-2026
 
 The first public release. Before this, the bot ran privately for one league.

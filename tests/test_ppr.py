@@ -3,7 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from cogs.ppr import PPR
-from core.errors import PPRFetchError
+from core.errors import ClientAuthorizationError, PPRFetchError
 from data.config import parse_ppr_managers
 
 DUMMY_MANAGERS = [
@@ -37,6 +37,7 @@ def fixture_ppr_cog(mock_get_client):
     mock_get_client.return_value = dummy_client
 
     ppr_cog = PPR(mock_bot)
+    ppr_cog.sheet = mock_sheet
     return ppr_cog
 
 
@@ -94,6 +95,7 @@ async def test_get_managers_reads_the_espn_year_row(monkeypatch):
     managers = await cog._get_managers()  # pylint: disable=protected-access
 
     assert managers == [{"team": "Alice", "ppr": 1.3}]
+    cog.sheet.worksheets.assert_called_once()  # one trip to Google, not two
 
 
 def test_ppr_admin_check_tolerates_spaces_in_admin_ids(monkeypatch):
@@ -157,3 +159,39 @@ async def test_ppr_reports_missing_config_instead_of_guessing(monkeypatch):
 
     with pytest.raises(PPRFetchError, match="PPR_MANAGERS is not set"):
         await cog._get_managers()  # pylint: disable=protected-access
+
+
+def test_cog_loads_while_google_is_unreachable():
+    """A Google hiccup while the bot starts must not disable !ppr until the
+    next restart: the spreadsheet is only opened when it's needed."""
+    with patch(
+        "cogs.ppr.get_client", side_effect=ClientAuthorizationError("Google down")
+    ):
+        cog = PPR(MagicMock())
+
+    assert cog.sheet is None
+
+
+@pytest.mark.asyncio
+async def test_spreadsheet_is_opened_on_first_use_and_reused():
+    client = MagicMock()
+    with patch("cogs.ppr.get_client", return_value=client):
+        cog = PPR(MagicMock())
+        first = await cog._spreadsheet()  # pylint: disable=protected-access
+        second = await cog._spreadsheet()  # pylint: disable=protected-access
+
+    assert first is second is client.open.return_value
+    client.open.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_open_is_tried_again():
+    client = MagicMock()
+    client.open.side_effect = [ClientAuthorizationError("Google down"), "sheet"]
+    with patch("cogs.ppr.get_client", return_value=client):
+        cog = PPR(MagicMock())
+        with pytest.raises(ClientAuthorizationError):
+            await cog._spreadsheet()  # pylint: disable=protected-access
+        sheet = await cog._spreadsheet()  # pylint: disable=protected-access
+
+    assert sheet == "sheet"
