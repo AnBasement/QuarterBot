@@ -105,7 +105,7 @@ async def on_command_error(ctx, error):
 async def main():
     """Starts the keep-alive server, loads the cogs and runs the bot."""
     setup_logging()  # before anything logs
-    keep_alive()
+    keep_alive(bot)
     async with bot:
         for cog in COGS:
             try:
