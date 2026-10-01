@@ -165,7 +165,6 @@ class Transactions(commands.Cog):
             league.recent_activity, ACTIVITY_FETCH_SIZE
         )
 
-
         if self.last_date is None:
             # First start: take the newest move as the starting point, rather
             # than flooding the channel with the last 25 moves.
