@@ -21,6 +21,7 @@ from cogs.pickem import (
 from core.utils.quiet_hours import clamp_to_quiet_hours
 from core.errors import (
     APIFetchError,
+    ClientAuthorizationError,
     ExportError,
     NoEventsFoundError,
     SheetNotFoundError,
@@ -1452,6 +1453,22 @@ class TestLockPicks:
         assert locked is False
         assert cog.last_exported_week == 4
         cog._notify_admin.assert_not_awaited()  # logged only; the round warns once
+
+    @pytest.mark.asyncio
+    async def test_google_login_failure_is_retried_quietly(self):
+        """Opening the sheet can fail before export starts (Google login, sheet
+        not found). That's a Google hiccup like any other: retried, not raised."""
+        cog = make_cog(last_exported_week=4)
+        cog._export_impl = AsyncMock(
+            side_effect=ClientAuthorizationError("Google unreachable")
+        )
+        cog._save_state = AsyncMock()
+        channel = MagicMock(spec=discord.TextChannel)
+
+        locked = await cog._lock_picks(5, channel)
+
+        assert locked is False
+        assert cog.last_exported_week == 4
 
 
 class TestTuesdayAfterLock:

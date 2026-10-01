@@ -938,6 +938,7 @@ class Pickem(commands.Cog):
             await self._export_impl(ctx, week)
         except (
             ExportError,
+            SheetsError,  # e.g. Google login failed, or the sheet wasn't found
             discord.HTTPException,
             gspread.exceptions.GSpreadException,
             requests.exceptions.RequestException,
@@ -1285,7 +1286,7 @@ class Pickem(commands.Cog):
         sheet = await sheets_call(ExportError, get_sheet, PICKEM_SHEET_NAME)
         channel = ctx.channel
 
-        managers = self.get_managers(sheet)
+        managers = await sheets_call(ExportError, self.get_managers, sheet)
         num_managers = len(managers)
 
         league_tz = pytz.timezone(LEAGUE_TIMEZONE)
@@ -1491,7 +1492,7 @@ class Pickem(commands.Cog):
                 game_results[game_code] = DRAW_SHEET_LABEL
         logger.debug("Game results: %s", game_results)
 
-        managers = self.get_managers(sheet)
+        managers = await sheets_call(ResultsError, self.get_managers, sheet)
         logger.debug("Managers found: %s", managers)
         num_managers = len(managers)
 

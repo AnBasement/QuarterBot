@@ -22,6 +22,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 - An unplayed game (postponed or canceled) was scored as a 0-0 tie. It's now void: nobody gets points for it
 - A Discord error while posting the week's games stopped the weekly posting until the bot restarted. It's now retried an hour later
 - If the game channel couldn't be found, the week was still announced and marked as posted, without any games, and never retried. It's now retried every hour, and the admin channel is told once
+- Export and results read the pick'em players' Discord IDs without a time limit, freezing the bot while Google answered, and a Google error there wasn't reported as an export or results error. That read now works like every other spreadsheet call
+- A failed Google login during the pick lock posted to the admin channel on every retry, instead of being retried quietly like other Google hiccups
 
 ## [1.0.0] - 25-09-2026
 
