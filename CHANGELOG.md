@@ -14,6 +14,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 - The Sunday reminder's default text says that picks lock at kickoff
 - The Tuesday run only scores weeks that were locked; it no longer exports them again
 - ESPN or Google hiccups during the pick lock are retried quietly instead of posting to the admin channel on every attempt
+- Weeks are scored from Tuesday 18:00, as soon as ESPN has marked every game final, and the next week's games are posted right after. Before, both waited until ESPN switched weeks on Wednesday morning. The week waits for delayed games
+- The Super Bowl week's games are posted right after the conference championships, since the Pro Bowl week in between has nothing to pick
+- A game still not final 60 hours after the week's last kickoff (postponed or canceled) no longer holds the week up: the week is scored without it, and the admin channel is told
+
+
+### Fixed
+- An unplayed game (postponed or canceled) was scored as a 0-0 tie. It's now void: nobody gets points for it
+- A Discord error while posting the week's games stopped the weekly posting until the bot restarted. It's now retried an hour later
 
 ## [1.0.0] - 25-09-2026
 
