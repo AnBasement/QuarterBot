@@ -1,9 +1,10 @@
 """Tests for sheets.py"""
 
 from unittest.mock import MagicMock
+import google.auth.exceptions
 import pytest
 from cogs import sheets
-from core.errors import MissingCredentialsError
+from core.errors import ClientAuthorizationError, MissingCredentialsError
 
 
 def test_get_creds_none(monkeypatch):
@@ -50,3 +51,41 @@ def test_get_sheet(monkeypatch):
     dummy_client.open.assert_called_once_with("MySheet")
     dummy_client.open.return_value.get_worksheet.assert_called_once_with(0)
     assert sheet == dummy_sheet
+
+
+def test_get_client_logs_in_once_and_reuses_the_client(monkeypatch):
+    logins = []
+
+    def fake_authorize(creds):
+        logins.append(creds)
+        return "client_instance"
+
+    monkeypatch.setattr(sheets, "get_creds", lambda: "creds")
+    monkeypatch.setattr(sheets.gspread, "authorize", fake_authorize)
+
+    first = sheets.get_client()
+    second = sheets.get_client()
+
+    assert first == second == "client_instance"
+    assert len(logins) == 1
+
+
+def test_failed_login_is_not_remembered(monkeypatch):
+    """A failed login must be retried on the next call, not stick forever."""
+    attempts = []
+
+    def flaky_authorize(creds):
+        attempts.append(creds)
+        if len(attempts) == 1:
+            raise google.auth.exceptions.TransportError("Google unreachable")
+        return "client_instance"
+
+    monkeypatch.setattr(sheets, "get_creds", lambda: "creds")
+    monkeypatch.setattr(sheets.gspread, "authorize", flaky_authorize)
+
+    with pytest.raises(ClientAuthorizationError):
+        sheets.get_client()
+    client = sheets.get_client()
+
+    assert client == "client_instance"
+    assert len(attempts) == 2

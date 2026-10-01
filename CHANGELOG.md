@@ -14,6 +14,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 - The Sunday reminder's default text says that picks lock at kickoff
 - The Tuesday run only scores weeks that were locked; it no longer exports them again
 - ESPN or Google hiccups during the pick lock are retried quietly instead of posting to the admin channel on every attempt
+- The bot logs in to Google once and reuses the connection, instead of logging in again for every spreadsheet action. If you replace `credentials.json`, restart the bot
 
 ## [1.0.0] - 25-09-2026
 
