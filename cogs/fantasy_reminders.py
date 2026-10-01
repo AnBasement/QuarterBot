@@ -65,6 +65,16 @@ logger = logging.getLogger(__name__)
 WAIVER_REMINDER_LATE_LIMIT = timedelta(hours=1)
 
 
+def played_matchups(boxes: list) -> list:
+    """The box scores with a team on both sides.
+
+    In playoff weeks, a team with a bye shows up as a box score with only one
+    team (espn_api gives None for the other side). There's no game to recap,
+    preview or give awards for.
+    """
+    return [box for box in boxes if box.home_team and box.away_team]
+
+
 class FantasyReminders(commands.Cog):
     """Scheduled fantasy league messages in REMINDER_CHANNEL_ID."""
 
@@ -127,7 +137,9 @@ class FantasyReminders(commands.Cog):
 
         # Recap
         msg.append(RECAP_HEADER_TEMPLATE.format(week=last_week))
-        recap_boxes = await asyncio.to_thread(league.box_scores, week=last_week)
+        recap_boxes = played_matchups(
+            await asyncio.to_thread(league.box_scores, week=last_week)
+        )
 
         recap_lines = []
         nailbiter: Optional[Tuple[float, str]] = None
@@ -298,7 +310,9 @@ class FantasyReminders(commands.Cog):
             # Preview
             msg.append("")
             msg.append(PREVIEW_HEADER_TEMPLATE.format(week=next_week))
-            preview_boxes = await asyncio.to_thread(league.box_scores, week=next_week)
+            preview_boxes = played_matchups(
+                await asyncio.to_thread(league.box_scores, week=next_week)
+            )
             for box in preview_boxes:
                 home, away = box.home_team, box.away_team
                 msg.append(
