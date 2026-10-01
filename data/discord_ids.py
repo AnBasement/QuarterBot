@@ -14,9 +14,15 @@ def load_discord_ids(path: str | Path = "discord_ids.json") -> dict[int, int]:
 
     try:
         raw = json.loads(file_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+    except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"Could not read JSON from {file_path}") from exc
 
+    # Valid JSON that isn't {...} (e.g. a list) would otherwise fail with an
+    # AttributeError, which the caller doesn't expect.
+    if not isinstance(raw, dict):
+        raise ValueError(
+            'The Discord ID file must have the format {"team_id": "discord_id"}'
+        )
     try:
         return {int(key): int(value) for key, value in raw.items()}
     except (TypeError, ValueError) as exc:
