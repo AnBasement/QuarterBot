@@ -127,6 +127,13 @@ def parse_espn_date(datestr: str) -> datetime:
     return datetime.fromisoformat(datestr.replace("Z", "+00:00"))
 
 
+def upcoming_nfl_date(target_weekday: int, now_eastern: datetime) -> date:
+    """The next date with this weekday (Monday=0) in US Eastern time, today
+    included. ESPN's scoreboard takes dates in Eastern time."""
+    today = now_eastern.date()
+    return today + timedelta(days=(target_weekday - today.weekday()) % 7)
+
+
 def is_pickable_game(ev: dict[str, Any]) -> bool:
     """Whether an ESPN event is a game between two of the 32 NFL teams.
 
@@ -463,11 +470,19 @@ class Pickem(commands.Cog):
         return True
 
     async def _fetch_events_for_nfl_weekday(self, target_weekday: int) -> list | None:
-        """This week's pickable games on a weekday in US Eastern time (Monday=0).
+        """The pickable games on the next such weekday in US Eastern time
+        (Monday=0), today included.
+
+        Asks ESPN for that date rather than for its current week: ESPN only
+        switches weeks on Wednesday morning, so on an early Wednesday its
+        current week still has last week's (finished) Thursday game.
 
         Returns None if ESPN can't be reached, after a five minute backoff.
         """
-        url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+        game_date = upcoming_nfl_date(
+            target_weekday, datetime.now(NFL_SCHEDULE_TIMEZONE)
+        )
+        url = f"{SCOREBOARD_URL}?dates={game_date:%Y%m%d}"
 
         try:
             async with aiohttp.ClientSession(

@@ -1,7 +1,8 @@
 """Tests for pickem.py."""
 
 from unittest.mock import AsyncMock, MagicMock
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+import re
 import aiohttp
 import discord
 import pytest
@@ -17,6 +18,7 @@ from cogs.pickem import (
     is_pickable_game,
     pick_lock_time,
     next_pickem_week,
+    upcoming_nfl_date,
 )
 from core.utils.quiet_hours import clamp_to_quiet_hours
 from core.errors import (
@@ -454,8 +456,10 @@ class TestCheckThursdayReminder:
                 pass
 
             def get(self, url, *args, **kwargs):
+                urls.append(url)
                 return DummyResponse()
 
+        urls: list[str] = []
         monkeypatch.setattr(
             "cogs.pickem.aiohttp.ClientSession",
             lambda *a, **kw: DummySession(),
@@ -464,6 +468,8 @@ class TestCheckThursdayReminder:
         result = await cog._fetch_events_for_nfl_weekday(3)
 
         assert result == [{"date": "2024-09-06T00:15Z"}]
+        # Asks for a date, not ESPN's current week (see upcoming_nfl_date).
+        assert re.search(r"\?dates=\d{8}$", urls[0])
 
     @pytest.mark.asyncio
     async def test_reminder_time_clamped_out_of_quiet_hours(self, monkeypatch):
@@ -1740,3 +1746,24 @@ class TestPostWeek:
         assert cog.last_posted_week == 4
         cog._save_state.assert_not_awaited()
         cog._notify_admin.assert_awaited_once()
+
+
+class TestUpcomingNflDate:
+    """Reminders ask ESPN for the next Thursday or Sunday, by date."""
+
+    EASTERN = pytz.timezone("America/New_York")
+
+    def test_wednesday_gives_tomorrow(self):
+        wednesday = self.EASTERN.localize(datetime(2026, 9, 30, 2, 0))
+
+        assert upcoming_nfl_date(3, wednesday) == date(2026, 10, 1)
+
+    def test_on_the_day_itself_gives_today(self):
+        thursday = self.EASTERN.localize(datetime(2026, 10, 1, 19, 0))
+
+        assert upcoming_nfl_date(3, thursday) == date(2026, 10, 1)
+
+    def test_saturday_gives_sunday(self):
+        saturday = self.EASTERN.localize(datetime(2026, 10, 3, 2, 0))
+
+        assert upcoming_nfl_date(6, saturday) == date(2026, 10, 4)
