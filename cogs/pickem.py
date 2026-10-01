@@ -1181,9 +1181,7 @@ class Pickem(commands.Cog):
                     )
                     await asyncio.sleep(max(60, (next_start - now).total_seconds()))
                 else:
-                    await asyncio.sleep(
-                        self._seconds_until_next_round(datetime.now(self.league_tz))
-                    )
+                    await asyncio.sleep(AUTO_POST_RETRY_SECONDS)
                 continue
 
             try:
@@ -1201,7 +1199,9 @@ class Pickem(commands.Cog):
                 discord.HTTPException,
             ) as exc:
                 logger.error("Auto-post round failed: %s. Retrying in 1 hour.", exc)
-            await asyncio.sleep(AUTO_POST_RETRY_SECONDS)
+            await asyncio.sleep(
+                self._seconds_until_next_round(datetime.now(self.league_tz))
+            )
 
     def _format_event(self, ev: dict[str, Any], guild: discord.Guild | None) -> str:
         """Formats an ESPN game as "emoji Away @ Home emoji" for the given server."""

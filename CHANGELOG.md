@@ -18,7 +18,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 - The Super Bowl week's games are posted right after the conference championships, since the Pro Bowl week in between has nothing to pick
 - A game still not final 60 hours after the week's last kickoff (postponed or canceled) no longer holds the week up: the week is scored without it, and the admin channel is told
 
-
 ### Fixed
 - An unplayed game (postponed or canceled) was scored as a 0-0 tie. It's now void: nobody gets points for it
 - A Discord error while posting the week's games stopped the weekly posting until the bot restarted. It's now retried an hour later

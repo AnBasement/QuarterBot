@@ -1186,6 +1186,29 @@ async def test_scheduler_survives_a_discord_error(monkeypatch):
     cog._auto_post_round.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_scheduler_in_season_sleeps_until_the_next_round(monkeypatch):
+    """In season, the loop sleeps only until the next round (Tuesday 18:00 at
+    the latest), not a fixed hour."""
+    cog = make_cog(state_loaded=True, last_processed_week=4, last_posted_week=4)
+    cog.bot.wait_until_ready = AsyncMock()
+    cog._season_window = MagicMock(return_value=(True, None, None))
+    cog._auto_post_round = AsyncMock()
+    cog._seconds_until_next_round = MagicMock(return_value=123)
+    slept = []
+
+    async def stop_at_the_sleep(seconds):
+        slept.append(seconds)
+        raise SystemExit()
+
+    monkeypatch.setattr("cogs.pickem.asyncio.sleep", stop_at_the_sleep)
+
+    with pytest.raises(SystemExit):
+        await cog.auto_post_scheduler()
+
+    assert slept == [123]
+
+
 # Pick lock
 
 OSLO = pytz.timezone("Europe/Oslo")
