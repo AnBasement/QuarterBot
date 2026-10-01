@@ -1188,6 +1188,27 @@ async def test_scheduler_survives_a_discord_error(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_scheduler_survives_an_unexpected_error(monkeypatch):
+    """Anything unexpected (here a KeyError, as if ESPN changed its data
+    format) must not end the weekly loop, and the admin hears about it."""
+    cog = make_cog(state_loaded=True, last_processed_week=4, last_posted_week=4)
+    cog.bot.wait_until_ready = AsyncMock()
+    cog._season_window = MagicMock(return_value=(True, None, None))
+    cog._auto_post_round = AsyncMock(side_effect=KeyError("competitions"))
+    cog._notify_admin = AsyncMock()
+
+    async def stop_at_the_sleep(seconds):
+        raise SystemExit()  # reaching the sleep means the error was handled
+
+    monkeypatch.setattr("cogs.pickem.asyncio.sleep", stop_at_the_sleep)
+
+    with pytest.raises(SystemExit):
+        await cog.auto_post_scheduler()
+
+    cog._notify_admin.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_scheduler_in_season_sleeps_until_the_next_round(monkeypatch):
     """In season, the loop sleeps only until the next round (Tuesday 18:00 at
     the latest), not a fixed hour."""

@@ -1214,6 +1214,15 @@ class Pickem(commands.Cog):
                 discord.HTTPException,
             ) as exc:
                 logger.error("Auto-post round failed: %s. Retrying in 1 hour.", exc)
+            except Exception as exc:
+                # Broad on purpose: this is the scheduler loop's boundary. An
+                # unexpected error (e.g. ESPN changing its data format) must not
+                # end the weekly scoring and posting until the next restart.
+                logger.exception("Unexpected error in auto-post round: %s", exc)
+                await self._notify_admin(
+                    f"[pickem] Unexpected error in the weekly scoring and posting: "
+                    f"{exc}. Retrying in 1 hour."
+                )
             await asyncio.sleep(
                 self._seconds_until_next_round(datetime.now(self.league_tz))
             )
