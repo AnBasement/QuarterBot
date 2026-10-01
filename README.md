@@ -57,6 +57,10 @@ Add your own `!commands` that reply with a fixed message, like links or inside j
 
 Each entry is `"command name": "reply"`, so the example above gives `!rules` and `!doink`. On Render, upload the file as a Secret File named `custom_commands.json`. The file is optional, and a broken one is logged and skipped rather than stopping the bot. Built-in command names (like `export`) can't be used.
 
+### Transactions
+
+Posts every add, drop, waiver claim and completed trade in the ESPN league to its own channel, a few minutes after it happens (trade proposals aren't posted). Optional: set `TRANSACTIONS_CHANNEL_ID` to switch it on. The bot remembers the last move it posted in a `Transactions` tab it creates in the pick'em spreadsheet, so a restart doesn't post anything twice.
+
 ### Other
 
 The bot sends a reminder every Tuesday not to forget waivers before the new week starts.
@@ -182,6 +186,7 @@ Settings are given to the bot as "environment variables": named values like `GAM
 | `PPR_MANAGERS` | Yes, for `!ppr` | One entry per manager, separated by `;`: the manager's tab name in the league sheet, optionally followed by `=` and the team name to show, e.g. `Alice=Aces;Bob=Bombers`. Update when managers join/leave or rename their team |
 | `PPR_HISTORY_SHEET_NAME` | No (default `PPR History`) | Name of the Sheets tab that stores PPR snapshot history |
 | `FANTASY_FINAL_WEEK` | No (default `17`) | Final week of the league's ESPN fantasy season (regular + playoff weeks); check your own league's ESPN settings |
+| `TRANSACTIONS_CHANNEL_ID` | No | Channel for league moves (adds, drops, waiver claims, trades). Leave it out to switch the feature off |
 
 **Bot-posted message text:** everything the bot says in Discord (reminders, confirmations, the weekly matchup digest, inactive-player alerts, and so on) is also configurable, each with a neutral English default. See `.env.example` for every variable name, its default, and any `{placeholder}` values a message fills in. No code changes are needed to run the bot in your own language or wording.
 
