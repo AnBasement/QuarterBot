@@ -558,3 +558,37 @@ async def test_unplayed_game_without_a_score_is_still_void(monkeypatch):
     await make_cog()._results_impl(make_ctx(), 1)
 
     assert sheet.row_values(5) == ["Weekly points", "1", "0"]
+
+
+@pytest.mark.asyncio
+async def test_export_error_reading_player_ids_raises_export_error(monkeypatch):
+    """Reading the Discord ID row goes through sheets_call like every other
+    Sheets call: in a thread, with a timeout, and failing as ExportError."""
+    sheet = FakeSheet(HEADER_ROWS)
+    sheet.row_values = MagicMock(
+        side_effect=gspread.exceptions.GSpreadException("quota exceeded")
+    )
+    monkeypatch.setattr("cogs.pickem.get_sheet", lambda name: sheet)
+    cog = make_cog()
+
+    with pytest.raises(ExportError):
+        await cog._export_impl(export_ctx(cog, {111: "New York Giants"}))
+
+
+@pytest.mark.asyncio
+async def test_results_error_reading_player_ids_raises_results_error(monkeypatch):
+    """Results reads Discord ID through sheets_call too so a Google error fails
+    as ResultsError."""
+    patch_espn(
+        monkeypatch,
+        [espn_game("New England Patriots", 17, "New York Giants", 24)],
+    )
+    sheet = FakeSheet(HEADER_ROWS)
+    sheet.row_values = MagicMock(
+        side_effect=gspread.exceptions.GSpreadException("Test")
+    )
+    monkeypatch.setattr("cogs.pickem.get_sheet", lambda name: sheet)
+    cog = make_cog()
+
+    with pytest.raises(ResultsError):
+        await cog._results_impl(make_ctx(), 1)

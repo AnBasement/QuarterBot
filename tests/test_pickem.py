@@ -23,6 +23,7 @@ from cogs.pickem import (
 from core.utils.quiet_hours import clamp_to_quiet_hours
 from core.errors import (
     APIFetchError,
+    ClientAuthorizationError,
     ExportError,
     NoEventsFoundError,
     SheetNotFoundError,
@@ -1194,6 +1195,33 @@ async def test_scheduler_survives_a_discord_error(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_scheduler_survives_an_unexpected_error(monkeypatch):
+    """Anything unexpected (here a KeyError, as if ESPN changed its data
+    format) must not end the weekly loop, and the admin hears about it."""
+    cog = make_cog(state_loaded=True, last_processed_week=4, last_posted_week=4)
+    cog.bot.wait_until_ready = AsyncMock()
+    cog._season_window = MagicMock(return_value=(True, None, None))
+    # The first round fails, the second works.
+    cog._auto_post_round = AsyncMock(side_effect=[KeyError("competitions"), None])
+    cog._notify_admin = AsyncMock()
+    sleeps = 0
+
+    async def stop_at_the_second_sleep(seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 2:
+            raise SystemExit()  # the loop survived the error and ran again
+
+    monkeypatch.setattr("cogs.pickem.asyncio.sleep", stop_at_the_second_sleep)
+
+    with pytest.raises(SystemExit):
+        await cog.auto_post_scheduler()
+
+    assert cog._auto_post_round.await_count == 2
+    cog._notify_admin.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_scheduler_in_season_sleeps_until_the_next_round(monkeypatch):
     """In season, the loop sleeps only until the next round (Tuesday 18:00 at
     the latest), not a fixed hour."""
@@ -1449,6 +1477,24 @@ class TestLockPicks:
     async def test_failed_export_leaves_week_unlocked(self):
         cog = make_cog(last_exported_week=4)
         cog._export_impl = AsyncMock(side_effect=ExportError("Sheets down"))
+        cog._save_state = AsyncMock()
+        cog._notify_admin = AsyncMock()
+        channel = MagicMock(spec=discord.TextChannel)
+
+        locked = await cog._lock_picks(5, channel)
+
+        assert locked is False
+        assert cog.last_exported_week == 4
+        cog._notify_admin.assert_not_awaited()  # logged only; the round warns once
+
+    @pytest.mark.asyncio
+    async def test_google_login_failure_is_retried_quietly(self):
+        """Opening the sheet can fail before export starts (Google login, sheet
+        not found). That's a Google hiccup like any other: retried, not raised."""
+        cog = make_cog(last_exported_week=4)
+        cog._export_impl = AsyncMock(
+            side_effect=ClientAuthorizationError("Google unreachable")
+        )
         cog._save_state = AsyncMock()
         cog._notify_admin = AsyncMock()
         channel = MagicMock(spec=discord.TextChannel)

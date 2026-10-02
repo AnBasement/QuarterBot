@@ -953,6 +953,7 @@ class Pickem(commands.Cog):
             await self._export_impl(ctx, week)
         except (
             ExportError,
+            SheetsError,  # e.g. Google login failed, or the sheet wasn't found
             discord.HTTPException,
             gspread.exceptions.GSpreadException,
             requests.exceptions.RequestException,
@@ -1229,6 +1230,15 @@ class Pickem(commands.Cog):
                 discord.HTTPException,
             ) as exc:
                 logger.error("Auto-post round failed: %s. Retrying in 1 hour.", exc)
+            except Exception as exc:
+                # Broad on purpose: this is the scheduler loop's boundary. An
+                # unexpected error (e.g. ESPN changing its data format) must not
+                # end the weekly scoring and posting until the next restart.
+                logger.exception("Unexpected error in auto-post round: %s", exc)
+                await self._notify_admin(
+                    f"[pickem] Unexpected error in the weekly scoring and posting: "
+                    f"{exc}. Retrying in 1 hour."
+                )
             await asyncio.sleep(
                 self._seconds_until_next_round(datetime.now(self.league_tz))
             )
@@ -1300,7 +1310,7 @@ class Pickem(commands.Cog):
         sheet = await sheets_call(ExportError, get_sheet, PICKEM_SHEET_NAME)
         channel = ctx.channel
 
-        managers = self.get_managers(sheet)
+        managers = await sheets_call(ExportError, self.get_managers, sheet)
         num_managers = len(managers)
 
         league_tz = pytz.timezone(LEAGUE_TIMEZONE)
@@ -1506,7 +1516,7 @@ class Pickem(commands.Cog):
                 game_results[game_code] = DRAW_SHEET_LABEL
         logger.debug("Game results: %s", game_results)
 
-        managers = self.get_managers(sheet)
+        managers = await sheets_call(ResultsError, self.get_managers, sheet)
         logger.debug("Managers found: %s", managers)
         num_managers = len(managers)
 
