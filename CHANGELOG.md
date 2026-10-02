@@ -21,6 +21,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ### Fixed
 - An unplayed game (postponed or canceled) was scored as a 0-0 tie. It's now void: nobody gets points for it
 - A Discord error while posting the week's games stopped the weekly posting until the bot restarted. It's now retried an hour later
+- If the game channel couldn't be found, the week was still announced and marked as posted, without any games, and never retried. It's now retried every hour, and the admin channel is told once
 
 ## [1.0.0] - 25-09-2026
 

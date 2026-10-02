@@ -290,6 +290,7 @@ class Pickem(commands.Cog):
         self.last_exported_week: int | None = None
         self._lock_missed_week: int | None = None
         self._unfinished_week: int | None = None
+        self._missing_channel_week: int | None = None
         self.state_loaded: bool = False
         self._state_dirty: bool = False
         task = self.reminder_scheduler()
@@ -1068,25 +1069,39 @@ class Pickem(commands.Cog):
             return
 
         game_channel = self._get_text_channel(GAME_CHANNEL_ID)
+        if game_channel is None:
+            # Don't announce or record a week whose games weren't posted: the
+            # next round tries again.
+            logger.warning(
+                "Game channel %s not found; week %s not posted. Retrying in 1 hour.",
+                GAME_CHANNEL_ID,
+                week,
+            )
+            if self._missing_channel_week != week:
+                self._missing_channel_week = week
+                await self._notify_admin(
+                    f"[pickem] Can't find the game channel ({GAME_CHANNEL_ID}), so "
+                    f"week {week}'s games weren't posted. Retrying every hour."
+                )
+            return
         reminder_channel = self._get_text_channel(REMINDER_CHANNEL_ID)
 
         # Already posted, e.g. before a restart?
-        if game_channel is not None:
-            try:
-                already = await self._events_posted_recently(events, game_channel)
-            except discord.HTTPException as exc:
-                logger.warning("Failed to check history: %s", exc)
-                already = False
-            if already:
-                logger.info("Week %s already posted; updating state only.", week)
-                self.last_posted_week = week
-                await self._save_state()
-                return
+        try:
+            already = await self._events_posted_recently(events, game_channel)
+        except discord.HTTPException as exc:
+            logger.warning("Failed to check history: %s", exc)
+            already = False
+        if already:
+            logger.info("Week %s already posted; updating state only.", week)
+            self.last_posted_week = week
+            await self._save_state()
+            return
 
-            logger.info("Posting %d events for week %s to Discord", len(events), week)
-            for ev in events:
-                await game_channel.send(self._format_event(ev, game_channel.guild))
-            await game_channel.send(PICK_INSTRUCTIONS_MESSAGE)
+        logger.info("Posting %d events for week %s to Discord", len(events), week)
+        for ev in events:
+            await game_channel.send(self._format_event(ev, game_channel.guild))
+        await game_channel.send(PICK_INSTRUCTIONS_MESSAGE)
         if reminder_channel is not None:
             await reminder_channel.send(
                 WEEKLY_GAMES_POSTED_MESSAGE.format(week=week, channel=GAME_CHANNEL_ID)

@@ -42,6 +42,7 @@ def make_cog(**attrs):
     cog.last_exported_week = None
     cog._lock_missed_week = None
     cog._unfinished_week = None
+    cog._missing_channel_week = None
     cog.state_loaded = False
     cog._state_dirty = False
     for key, value in attrs.items():
@@ -1692,3 +1693,50 @@ class TestAutoPostRound:
         await cog._auto_post_round(TUESDAY)
 
         cog._post_week.assert_awaited_once_with(5)
+
+
+class TestPostWeek:
+    @staticmethod
+    def make_post_cog(game_channel):
+        """A cog with week 4 posted, about to post week 5, with ESPN faked."""
+        reminder_channel = MagicMock(spec=discord.TextChannel)
+        reminder_channel.send = AsyncMock()
+        cog = make_cog(state_loaded=True, last_posted_week=4, last_processed_week=4)
+        cog._fetch_week_events = AsyncMock(return_value=[{"id": "1"}, {"id": "2"}])
+        cog._get_text_channel = MagicMock(
+            side_effect=lambda cid: (
+                game_channel if cid == GAME_CHANNEL_ID else reminder_channel
+            )
+        )
+        cog._events_posted_recently = AsyncMock(return_value=False)
+        cog._format_event = MagicMock(return_value="Patriots @ Giants")
+        cog._save_state = AsyncMock(return_value=True)
+        cog._notify_admin = AsyncMock()
+        return cog, reminder_channel
+
+    @pytest.mark.asyncio
+    async def test_posts_games_and_marks_the_week_posted(self):
+        game_channel = MagicMock(spec=discord.TextChannel)
+        game_channel.send = AsyncMock()
+        cog, reminder_channel = self.make_post_cog(game_channel)
+
+        await cog._post_week(5)
+
+        assert game_channel.send.await_count == 3  # 2 games + the instructions
+        reminder_channel.send.assert_awaited_once()
+        assert cog.last_posted_week == 5
+        cog._save_state.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_missing_game_channel_posts_nothing_and_retries(self):
+        """Without the game channel, the week must not be announced or marked as
+        posted, or it would never be retried. The admin is told once."""
+        cog, reminder_channel = self.make_post_cog(game_channel=None)
+
+        await cog._post_week(5)
+        await cog._post_week(5)  # the next round, still no channel
+
+        reminder_channel.send.assert_not_awaited()
+        assert cog.last_posted_week == 4
+        cog._save_state.assert_not_awaited()
+        cog._notify_admin.assert_awaited_once()
