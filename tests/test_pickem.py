@@ -1490,12 +1490,14 @@ class TestLockPicks:
             side_effect=ClientAuthorizationError("Google unreachable")
         )
         cog._save_state = AsyncMock()
+        cog._notify_admin = AsyncMock()
         channel = MagicMock(spec=discord.TextChannel)
 
         locked = await cog._lock_picks(5, channel)
 
         assert locked is False
         assert cog.last_exported_week == 4
+        cog._notify_admin.assert_not_awaited()  # logged only; the round warns once
 
 
 class TestTuesdayAfterLock:
