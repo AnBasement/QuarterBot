@@ -72,9 +72,14 @@ logger = logging.getLogger(__name__)
 
 SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
 PROCESS_WEEKDAY = 1  # Tuesday (Monday=0)
-PROCESS_HOUR = 20  # 20:00 league time
+PROCESS_HOUR = 18  # 18:00 league time
 # The Super Bowl in the bot's week count (playoff weeks follow 18: 19 to 23).
 SUPER_BOWL_WEEK = 18 + 5
+PRO_BOWL_WEEK = 18 + 4  # no pickable games; skipped
+# A game still not final this long after the week's last kickoff (postponed
+# or canceled) is left out of the scoring. For a normal week: Thursday morning
+# US Eastern, before the next Thursday Night Football.
+UNFINISHED_GAME_CUTOFF_HOURS = 60
 
 # NFL games are scheduled in US Eastern time. A game's local weekday can
 # differ (Thursday Night Football is Friday morning in Oslo), so games are
@@ -134,6 +139,16 @@ def is_pickable_game(ev: dict[str, Any]) -> bool:
     except (KeyError, IndexError, TypeError):
         return True
     return all(name in teams for name in names)
+
+
+def next_pickem_week(week: int) -> int:
+    """The week to post after `week`: skips the Pro Bowl, and goes back to
+    week 1 after the Super Bowl."""
+    if week >= SUPER_BOWL_WEEK:
+        return 1
+    if week + 1 == PRO_BOWL_WEEK:
+        return week + 2
+    return week + 1
 
 
 def pick_lock_time(
@@ -274,6 +289,8 @@ class Pickem(commands.Cog):
         self.last_processed_week: int | None = None
         self.last_exported_week: int | None = None
         self._lock_missed_week: int | None = None
+        self._unfinished_week: int | None = None
+        self._missing_channel_week: int | None = None
         self.state_loaded: bool = False
         self._state_dirty: bool = False
         task = self.reminder_scheduler()
@@ -784,42 +801,46 @@ class Pickem(commands.Cog):
         next_start = min(future_starts) if future_starts else None
         return False, None, next_start
 
-    def _should_process_previous_week(self, now: datetime, current_week: int) -> bool:
-        """Whether last week is due for export and results (from Tuesday 20:00)."""
-        previous_week = current_week - 1
-        if self.last_processed_week == previous_week:
-            return False
+    async def _week_is_over(self, now: datetime, week: int) -> bool:
+        """Whether a week can be scored: from Tuesday PROCESS_HOUR, once ESPN
+        has marked every game final.
 
-        # There's no week before week 1.
-        if previous_week < 1:
-            return False
-
-        # From Tuesday 20:00, or any later day if it was missed.
+        A game that still isn't final UNFINISHED_GAME_CUTOFF_HOURS after the
+        week's last kickoff (postponed or canceled) doesn't hold the week up:
+        it's scored as void, and the admin is told once.
+        """
         if now.weekday() < PROCESS_WEEKDAY:
             return False
-        if now.weekday() == PROCESS_WEEKDAY:
-            earliest = now.replace(hour=PROCESS_HOUR, minute=0, second=0, microsecond=0)
-            return now >= earliest
-        return True
-
-    async def _super_bowl_needs_processing(self, now: datetime) -> bool:
-        """Whether the Super Bowl is over and due to be exported and scored.
-
-        Other weeks wait for ESPN to report the next week, but nothing comes after
-        the Super Bowl.
-        """
-        if self.last_processed_week != SUPER_BOWL_WEEK - 1:
+        if now.weekday() == PROCESS_WEEKDAY and now.hour < PROCESS_HOUR:
             return False
-        if not self._should_process_previous_week(now, SUPER_BOWL_WEEK + 1):
-            return False
+
         try:
-            events = await self._fetch_week_events(SUPER_BOWL_WEEK)
-        except (NoEventsFoundError, APIFetchError) as exc:
-            logger.warning("Could not check whether the Super Bowl is over: %s", exc)
-            return False
-        return all(
-            ev.get("status", {}).get("type", {}).get("completed") for ev in events
-        )
+            events = await self._fetch_week_events(week)
+        except NoEventsFoundError:
+            return True  # nothing to score; _process_previous_week marks it done
+        unfinished = [
+            ev
+            for ev in events
+            if not ev.get("status", {}).get("type", {}).get("completed")
+        ]
+        if not unfinished:
+            return True
+
+        last_kickoff = max(parse_espn_date(ev["date"]) for ev in events)
+        cutoff = last_kickoff + timedelta(hours=UNFINISHED_GAME_CUTOFF_HOURS)
+        if now < cutoff:
+            return False  # most likely just delayed: keep waiting
+
+        if self._unfinished_week != week:
+            self._unfinished_week = week
+            names = ", ".join(ev.get("shortName", "?") for ev in unfinished)
+            await self._notify_admin(
+                f"[pickem] Week {week}: {names} still isn't final "
+                f"{UNFINISHED_GAME_CUTOFF_HOURS} hours after the last kickoff "
+                "(postponed or canceled?). Scoring the week without it: nobody "
+                "gets points for it."
+            )
+        return True
 
     async def _process_previous_week(
         self, current_week: int, channel: discord.TextChannel | None
@@ -943,13 +964,13 @@ class Pickem(commands.Cog):
                 return max(60, (next_start - now).total_seconds())
             return PICK_LOCK_CHECK_SECONDS
 
-        current_week = await self._get_nfl_current_week()
+        # The week whose games are up in the channel. Locking it can never pick
+        # up another week's messages.
+        current_week = self.last_posted_week
+        if not current_week:
+            return PICK_LOCK_CHECK_SECONDS  # nothing posted yet
         if self.last_exported_week == current_week:
             return PICK_LOCK_CHECK_SECONDS  # already locked
-        if self.last_posted_week != current_week:
-            # This week's games aren't posted, so the export would pick up
-            # last week's messages instead.
-            return PICK_LOCK_CHECK_SECONDS
 
         try:
             events = await self._fetch_week_events(current_week)
@@ -1021,26 +1042,129 @@ class Pickem(commands.Cog):
             await asyncio.sleep(wait_seconds)
 
     async def _start_from_current_week_if_first_run(self, current_week: int) -> None:
-        """On a first start (empty State tab), treats earlier weeks as processed.
+        """On a first start (empty State tab), treats earlier weeks as done.
 
-        Otherwise a bot started mid-season would keep trying to process a week
-        it never posted, and never post anything.
+        Marks the week before ESPN's current week as posted and processed, so
+        the next step posts the current week.
         """
-        if self.last_processed_week is not None:
+        if self.last_posted_week is not None:
             return
+        self.last_posted_week = current_week - 1
         self.last_processed_week = current_week - 1
         logger.info(
             "First start (empty State tab): starting from week %s, "
-            "earlier weeks treated as already processed.",
+            "earlier weeks treated as done.",
             current_week,
         )
         await self._save_state()
 
-    async def auto_post_scheduler(self) -> None:
-        """Processes last week, then posts the new week's games. Runs forever."""
-        await self.bot.wait_until_ready()
+    async def _post_week(self, week: int) -> None:
+        """Posts a week's games, unless they're already posted. Retried by the
+        scheduler if ESPN doesn't have the games yet."""
+        try:
+            events = await self._fetch_week_events(week)
+        except NoEventsFoundError:
+            # E.g. a playoff round ESPN hasn't filled in yet: wait, don't skip.
+            logger.info("No games found for week %s yet. Retrying in 1 hour.", week)
+            return
+
         game_channel = self._get_text_channel(GAME_CHANNEL_ID)
+        if game_channel is None:
+            # Don't announce or record a week whose games weren't posted: the
+            # next round tries again.
+            logger.warning(
+                "Game channel %s not found; week %s not posted. Retrying in 1 hour.",
+                GAME_CHANNEL_ID,
+                week,
+            )
+            if self._missing_channel_week != week:
+                self._missing_channel_week = week
+                await self._notify_admin(
+                    f"[pickem] Can't find the game channel ({GAME_CHANNEL_ID}), so "
+                    f"week {week}'s games weren't posted. Retrying every hour."
+                )
+            return
         reminder_channel = self._get_text_channel(REMINDER_CHANNEL_ID)
+
+        # Already posted, e.g. before a restart?
+        try:
+            already = await self._events_posted_recently(events, game_channel)
+        except discord.HTTPException as exc:
+            logger.warning("Failed to check history: %s", exc)
+            already = False
+        if already:
+            logger.info("Week %s already posted; updating state only.", week)
+            self.last_posted_week = week
+            await self._save_state()
+            return
+
+        logger.info("Posting %d events for week %s to Discord", len(events), week)
+        for ev in events:
+            await game_channel.send(self._format_event(ev, game_channel.guild))
+        await game_channel.send(PICK_INSTRUCTIONS_MESSAGE)
+        if reminder_channel is not None:
+            await reminder_channel.send(
+                WEEKLY_GAMES_POSTED_MESSAGE.format(week=week, channel=GAME_CHANNEL_ID)
+            )
+
+        self.last_posted_week = week
+        await self._save_state()
+        logger.info(
+            "Auto-posted games for week %s. State: last_processed_week=%s, "
+            "last_posted_week=%s",
+            week,
+            self.last_processed_week,
+            self.last_posted_week,
+        )
+
+    async def _auto_post_round(self, now: datetime) -> None:
+        """One round: score the posted week once it's over, then post the next."""
+        if self.last_posted_week is None:
+            await self._start_from_current_week_if_first_run(
+                await self._get_nfl_current_week()
+            )
+        week = self.last_posted_week
+        if week is None:
+            return  # first-run setup didn't work; try again next round
+
+        # 1. Score the posted week once all its games are over.
+        if self.last_processed_week != week:
+            if not await self._week_is_over(now, week):
+                return
+            logger.info("Week %s is over. Running export and results.", week)
+            game_channel = self._get_text_channel(GAME_CHANNEL_ID)
+            # _process_previous_week(n) scores week n - 1.
+            if not await self._process_previous_week(week + 1, game_channel):
+                logger.warning(
+                    "Processing failed for week %s. Retrying in 1 hour.", week
+                )
+                return
+
+        # 2. Post the next week.
+        next_week = next_pickem_week(week)
+        if next_week == 1 and await self._get_nfl_current_week() != 1:
+            return  # a new season starts once ESPN says week 1
+        if self.last_posted_week != next_week:
+            await self._post_week(next_week)
+
+    def _seconds_until_next_round(self, now: datetime) -> float:
+        """An hour, or less if Tuesday PROCESS_HOUR comes sooner, so scoring and
+        posting start right at PROCESS_HOUR, together with the waiver reminder."""
+        days_ahead = (PROCESS_WEEKDAY - now.weekday()) % 7
+        next_processing = (now + timedelta(days=days_ahead)).replace(
+            hour=PROCESS_HOUR, minute=0, second=0, microsecond=0
+        )
+        if next_processing <= now:
+            next_processing += timedelta(days=7)
+        # Capped at an hour, so only the last hour before Tuesday PROCESS_HOUR
+        # matters. That never spans a daylight saving switch, so pytz's fixed
+        # offset on `now` is safe here.
+        seconds = (next_processing - now).total_seconds()
+        return max(1.0, min(AUTO_POST_RETRY_SECONDS, seconds))
+
+    async def auto_post_scheduler(self) -> None:
+        """Scores the posted week once it's over, then posts the next. Runs forever."""
+        await self.bot.wait_until_ready()
 
         while True:
             # Wait for the state to load, rather than assume nothing was done and
@@ -1062,30 +1186,21 @@ class Pickem(commands.Cog):
             # Retry a failed state save before acting on the state.
             await self._flush_pending_state()
 
-            try:
-                now = datetime.now(self.league_tz)
-
-                in_season, _season_end, next_start = self._season_window(now)
-                if not in_season:
-                    if next_start:
-                        sleep_seconds = max(60, (next_start - now).total_seconds())
-                        logger.info(
-                            "Outside season. Sleeping until next season starts: %s",
-                            next_start,
-                        )
-                        await asyncio.sleep(sleep_seconds)
-                        continue
+            now = datetime.now(self.league_tz)
+            in_season, _season_end, next_start = self._season_window(now)
+            if not in_season:
+                if next_start:
+                    logger.info(
+                        "Outside season. Sleeping until next season starts: %s",
+                        next_start,
+                    )
+                    await asyncio.sleep(max(60, (next_start - now).total_seconds()))
+                else:
                     await asyncio.sleep(AUTO_POST_RETRY_SECONDS)
-                    continue
+                continue
 
-                current_week = await self._get_nfl_current_week()
-                logger.debug(
-                    "Checking auto-post scheduler: current_week=%s, "
-                    "last_processed_week=%s, last_posted_week=%s",
-                    current_week,
-                    self.last_processed_week,
-                    self.last_posted_week,
-                )
+            try:
+                await self._auto_post_round(now)
             except (
                 aiohttp.ClientError,
                 asyncio.TimeoutError,
@@ -1095,143 +1210,13 @@ class Pickem(commands.Cog):
                 ESPNAccessDenied,
                 ESPNInvalidLeague,
                 ESPNUnknownError,
+                APIFetchError,
+                discord.HTTPException,
             ) as exc:
-                logger.error(
-                    "Failed to fetch league info for autopost: %s. Retrying in 1 hour.",
-                    exc,
-                )
-                await asyncio.sleep(AUTO_POST_RETRY_SECONDS)
-                continue
-
-            await self._start_from_current_week_if_first_run(current_week)
-
-            if await self._super_bowl_needs_processing(now):
-
-                if not await self._process_previous_week(
-                    SUPER_BOWL_WEEK + 1, game_channel
-                ):
-                    logger.warning("Super Bowl processing failed. Retrying in 1 hour.")
-                await asyncio.sleep(AUTO_POST_RETRY_SECONDS)
-                continue
-
-            # Last week first: export and results.
-            if self._should_process_previous_week(now, current_week):
-                logger.info(
-                    "Processing triggered for week %s (current=%s). "
-                    "Running export and results.",
-                    current_week - 1,
-                    current_week,
-                )
-                processing_ok = await self._process_previous_week(
-                    current_week, game_channel
-                )
-                if not processing_ok:
-                    logger.warning(
-                        "Processing failed for week %s. Retrying in 1 hour.",
-                        current_week - 1,
-                    )
-                    await asyncio.sleep(AUTO_POST_RETRY_SECONDS)
-                    continue
-
-            # Post the new week only after last week is processed.
-            if current_week > 1 and self.last_processed_week != current_week - 1:
-                logger.debug(
-                    "Blocking post: current_week=%s but last_processed_week=%s (need %s). "
-                    "Waiting for processing to complete.",
-                    current_week,
-                    self.last_processed_week,
-                    current_week - 1,
-                )
-                await asyncio.sleep(AUTO_POST_RETRY_SECONDS)
-                continue
-
-            if self.last_posted_week == current_week:
-                logger.debug(
-                    "Week %s already posted (last_posted_week=%s). Waiting for next week.",
-                    current_week,
-                    self.last_posted_week,
-                )
-                await asyncio.sleep(AUTO_POST_RETRY_SECONDS)
-                continue
-
-            try:
-                events = await self._fetch_week_events(current_week)
-            except NoEventsFoundError:
-                logger.info(
-                    "No games found for week %s yet. Retrying in 1 hour.",
-                    current_week,
-                )
-                await asyncio.sleep(AUTO_POST_RETRY_SECONDS)
-                continue
-            except APIFetchError as exc:
-                logger.error(
-                    "Error fetching games for week %s: %s. Retrying in 1 hour.",
-                    current_week,
-                    exc,
-                )
-                await asyncio.sleep(AUTO_POST_RETRY_SECONDS)
-                continue
-
-            if not events:
-                await asyncio.sleep(AUTO_POST_RETRY_SECONDS)
-                continue
-
-            # Already posted, e.g. before a restart?
-            if isinstance(game_channel, discord.TextChannel):
-                try:
-                    already = await self._events_posted_recently(events, game_channel)
-                except discord.HTTPException as exc:
-                    logger.warning("Failed to check history: %s", exc)
-                    already = False
-                if already:
-                    logger.info(
-                        "Week %s events already posted in history. "
-                        "Updating state and skipping posting.",
-                        current_week,
-                    )
-                    self.last_posted_week = current_week
-                    saved = await self._save_state()
-                    if not saved:
-                        logger.warning(
-                            "Week %s tagged as posted, but saving of state failed."
-                            "Retrying save next round.",
-                            current_week,
-                        )
-                    await asyncio.sleep(AUTO_POST_RETRY_SECONDS)
-                    continue
-
-            if isinstance(game_channel, discord.TextChannel):
-                logger.info(
-                    "Posting %d events for week %s to Discord",
-                    len(events),
-                    current_week,
-                )
-                for ev in events:
-                    await game_channel.send(self._format_event(ev, game_channel.guild))
-                await game_channel.send(PICK_INSTRUCTIONS_MESSAGE)
-            if isinstance(reminder_channel, discord.TextChannel):
-                await reminder_channel.send(
-                    WEEKLY_GAMES_POSTED_MESSAGE.format(
-                        week=current_week, channel=GAME_CHANNEL_ID
-                    )
-                )
-
-            self.last_posted_week = current_week
-            saved = await self._save_state()
-            if not saved:
-                logger.warning(
-                    "Week %s posted, but saving of state failed."
-                    "Retrying save next round.",
-                    current_week,
-                )
-            logger.info(
-                "Auto-posted games for week %s. Updated state: "
-                "last_processed_week=%s, last_posted_week=%s",
-                current_week,
-                self.last_processed_week,
-                self.last_posted_week,
+                logger.error("Auto-post round failed: %s. Retrying in 1 hour.", exc)
+            await asyncio.sleep(
+                self._seconds_until_next_round(datetime.now(self.league_tz))
             )
-            await asyncio.sleep(AUTO_POST_RETRY_SECONDS)
 
     def _format_event(self, ev: dict[str, Any], guild: discord.Guild | None) -> str:
         """Formats an ESPN game as "emoji Away @ Home emoji" for the given server."""
@@ -1467,7 +1452,7 @@ class Pickem(commands.Cog):
         if not events:
             raise NoEventsFoundError(week)
 
-        game_results = {}
+        game_results: dict[str, str | None] = {}
         for ev in events:
             try:
                 comps = ev["competitions"][0]["competitors"]
@@ -1483,14 +1468,22 @@ class Pickem(commands.Cog):
                 )
                 game_code = f"{away_team}@{home_team}"
 
-                home_score = int(home["score"])
-                away_score = int(away["score"])
+                # Only a played game's score is read: a postponed or canceled
+                # game's score may be missing or empty, and it's void anyway.
+                played = bool(ev.get("status", {}).get("type", {}).get("completed"))
+                if played:
+                    home_score = int(home["score"])
+                    away_score = int(away["score"])
             except (KeyError, IndexError, StopIteration, TypeError, ValueError) as e:
                 raise ResultsError(
                     "Error parsing game data for " f"{ev.get('id', 'unknown')}"
                 ) from e
 
-            if home_score > away_score:
+            if not played:
+                # Not played (postponed or canceled): void, nobody scores it.
+                # Kept in game_results so its row still counts as part of the week.
+                game_results[game_code] = None
+            elif home_score > away_score:
                 game_results[game_code] = home_team
             elif away_score > home_score:
                 game_results[game_code] = away_team
@@ -1554,6 +1547,8 @@ class Pickem(commands.Cog):
             logger.debug(
                 "Processing game %s (correct winner: %s)", game_code, correct_winner
             )
+            if correct_winner is None:
+                continue  # void game: no points, cells left as they are
 
             for pidx, _ in enumerate(manager_ids):
                 col_idx = start_col + pidx

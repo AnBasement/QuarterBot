@@ -73,9 +73,12 @@ class FakeSheet:
             self._set(cell.row, cell.col, cell.value)
 
 
-def espn_game(away: str, away_score: int, home: str, home_score: int) -> dict:
+def espn_game(
+    away: str, away_score: int, home: str, home_score: int, completed: bool = True
+) -> dict:
     return {
         "id": "1",
+        "status": {"type": {"completed": completed}},
         "competitions": [
             {
                 "competitors": [
@@ -503,3 +506,55 @@ async def test_team_not_in_the_game_is_ignored(monkeypatch):
     )
 
     assert sheet.row_values(4) == ["Patriots@Giants", "Giants", ""]
+
+
+@pytest.mark.asyncio
+async def test_unplayed_game_is_void_not_a_tie(monkeypatch):
+    """A postponed game stands at 0-0. It must score nothing, not count as a
+    tie, and the points row must still go below it when it's the last game."""
+    sheet = FakeSheet(
+        HEADER_ROWS
+        + [
+            ["Patriots@Giants", "Giants", "Patriots"],
+            ["Bills@Jets", "Jets", "Tie"],
+        ]
+    )
+    monkeypatch.setattr("cogs.pickem.get_sheet", lambda name: sheet)
+    patch_espn(
+        monkeypatch,
+        [
+            espn_game("New England Patriots", 17, "New York Giants", 24),
+            espn_game("Buffalo Bills", 0, "New York Jets", 0, completed=False),
+        ],
+    )
+
+    await make_cog()._results_impl(make_ctx(), 1)
+
+    assert sheet.row_values(4) == ["Bills@Jets", "Jets", "Tie"]  # untouched
+    assert sheet.row_values(5) == ["Weekly points", "1", "0"]  # Bob's Tie: no point
+    assert sheet.row_values(6) == ["Season total", "1", "0"]
+
+
+@pytest.mark.asyncio
+async def test_unplayed_game_without_a_score_is_still_void(monkeypatch):
+    """ESPN might send no score at all for a canceled game. That must not stop
+    the results: the game is void either way."""
+    sheet = FakeSheet(
+        HEADER_ROWS
+        + [
+            ["Patriots@Giants", "Giants", "Patriots"],
+            ["Bills@Jets", "Jets", "Tie"],
+        ]
+    )
+    monkeypatch.setattr("cogs.pickem.get_sheet", lambda name: sheet)
+    canceled = espn_game("Buffalo Bills", 0, "New York Jets", 0, completed=False)
+    for competitor in canceled["competitions"][0]["competitors"]:
+        del competitor["score"]
+    patch_espn(
+        monkeypatch,
+        [espn_game("New England Patriots", 17, "New York Giants", 24), canceled],
+    )
+
+    await make_cog()._results_impl(make_ctx(), 1)
+
+    assert sheet.row_values(5) == ["Weekly points", "1", "0"]
