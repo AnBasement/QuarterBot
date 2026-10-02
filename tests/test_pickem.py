@@ -1194,17 +1194,23 @@ async def test_scheduler_survives_an_unexpected_error(monkeypatch):
     cog = make_cog(state_loaded=True, last_processed_week=4, last_posted_week=4)
     cog.bot.wait_until_ready = AsyncMock()
     cog._season_window = MagicMock(return_value=(True, None, None))
-    cog._auto_post_round = AsyncMock(side_effect=KeyError("competitions"))
+    # The first round fails, the second works.
+    cog._auto_post_round = AsyncMock(side_effect=[KeyError("competitions"), None])
     cog._notify_admin = AsyncMock()
+    sleeps = 0
 
-    async def stop_at_the_sleep(seconds):
-        raise SystemExit()  # reaching the sleep means the error was handled
+    async def stop_at_the_second_sleep(seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 2:
+            raise SystemExit()  # the loop survived the error and ran again
 
-    monkeypatch.setattr("cogs.pickem.asyncio.sleep", stop_at_the_sleep)
+    monkeypatch.setattr("cogs.pickem.asyncio.sleep", stop_at_the_second_sleep)
 
     with pytest.raises(SystemExit):
         await cog.auto_post_scheduler()
 
+    assert cog._auto_post_round.await_count == 2
     cog._notify_admin.assert_awaited_once()
 
 
