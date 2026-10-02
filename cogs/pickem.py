@@ -1468,14 +1468,18 @@ class Pickem(commands.Cog):
                 )
                 game_code = f"{away_team}@{home_team}"
 
-                home_score = int(home["score"])
-                away_score = int(away["score"])
+                # Only a played game's score is read: a postponed or canceled
+                # game's score may be missing or empty, and it's void anyway.
+                played = bool(ev.get("status", {}).get("type", {}).get("completed"))
+                if played:
+                    home_score = int(home["score"])
+                    away_score = int(away["score"])
             except (KeyError, IndexError, StopIteration, TypeError, ValueError) as e:
                 raise ResultsError(
                     "Error parsing game data for " f"{ev.get('id', 'unknown')}"
                 ) from e
 
-            if not ev.get("status", {}).get("type", {}).get("completed"):
+            if not played:
                 # Not played (postponed or canceled): void, nobody scores it.
                 # Kept in game_results so its row still counts as part of the week.
                 game_results[game_code] = None

@@ -533,3 +533,28 @@ async def test_unplayed_game_is_void_not_a_tie(monkeypatch):
     assert sheet.row_values(4) == ["Bills@Jets", "Jets", "Tie"]  # untouched
     assert sheet.row_values(5) == ["Weekly points", "1", "0"]  # Bob's Tie: no point
     assert sheet.row_values(6) == ["Season total", "1", "0"]
+
+
+@pytest.mark.asyncio
+async def test_unplayed_game_without_a_score_is_still_void(monkeypatch):
+    """ESPN might send no score at all for a canceled game. That must not stop
+    the results: the game is void either way."""
+    sheet = FakeSheet(
+        HEADER_ROWS
+        + [
+            ["Patriots@Giants", "Giants", "Patriots"],
+            ["Bills@Jets", "Jets", "Tie"],
+        ]
+    )
+    monkeypatch.setattr("cogs.pickem.get_sheet", lambda name: sheet)
+    canceled = espn_game("Buffalo Bills", 0, "New York Jets", 0, completed=False)
+    for competitor in canceled["competitions"][0]["competitors"]:
+        del competitor["score"]
+    patch_espn(
+        monkeypatch,
+        [espn_game("New England Patriots", 17, "New York Giants", 24), canceled],
+    )
+
+    await make_cog()._results_impl(make_ctx(), 1)
+
+    assert sheet.row_values(5) == ["Weekly points", "1", "0"]
