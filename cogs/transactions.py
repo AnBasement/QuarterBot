@@ -24,7 +24,7 @@ from data.messages import (
 
 logger = logging.getLogger(__name__)
 
-CHECK_SECONDS = 300  # how often ESPN is asked for new moves
+CHECK_SECONDS = 60  # how often ESPN is asked for new moves (one small request)
 ERROR_BACKOFF_SECONDS = 600  # wait after a failed check
 # Moves fetched per check. If more than this happen between two checks (e.g.
 # while the bot is down), the oldest ones are never posted.

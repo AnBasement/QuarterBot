@@ -59,7 +59,7 @@ Each entry is `"command name": "reply"`, so the example above gives `!rules` and
 
 ### Transactions
 
-Posts every add, drop, waiver claim and completed trade in the ESPN league to its own channel, a few minutes after it happens (trade proposals aren't posted). Optional: set `TRANSACTIONS_CHANNEL_ID` to switch it on. The bot remembers the last move it posted in a `Transactions` tab it creates in the pick'em spreadsheet, so a restart doesn't post anything twice.
+Posts every add, drop, waiver claim and completed trade in the ESPN league to its own channel, within about a minute of it happening (trade proposals aren't posted). Optional: set `TRANSACTIONS_CHANNEL_ID` to switch it on. The bot remembers the last move it posted in a `Transactions` tab it creates in the pick'em spreadsheet, so a restart doesn't post anything twice.
 
 ### Other
 
