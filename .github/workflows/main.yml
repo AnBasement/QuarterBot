@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main, public-release ]
+    branches: [ main ]
   pull_request:
     branches: [ main ]
 
@@ -20,10 +20,14 @@ jobs:
         with:
           python-version: '3.12'
   
-      - name: Install Ruff
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install ruff
+          pip install -r requirements.txt
+
+      - name: Check formatting with black
+        run: |
+          black --check .
   
       - name: Run Ruff
         run: |
@@ -72,7 +76,7 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          # Ignorer DeprecationWarnings for pytz / oauth2client
+          # Ignore DeprecationWarnings from dependencies
           pytest -W ignore::DeprecationWarning --cov=. --cov-report=xml --cov-fail-under=25
 
       - name: Upload coverage reports to Codecov

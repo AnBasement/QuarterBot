@@ -370,6 +370,31 @@ async def test_big_league_digest_is_split_under_discords_limit(mock_bot, mock_ch
 
 
 @pytest.mark.asyncio
+async def test_playoff_bye_is_skipped_not_a_crash(mock_bot, mock_channel):
+    """In playoff weeks a team with a bye has a box score with no opponent
+    (None). The recap and preview leave it out instead of failing."""
+    aces, bombers, comets = (
+        make_digest_team("Aces", 9),
+        make_digest_team("Bombers", 8),
+        make_digest_team("Comets", 7),
+    )
+    league = make_digest_league(16, [aces, bombers, comets])
+    game = league.box_scores.return_value[0]  # Aces v Comets
+    bye = Mock()
+    bye.home_team, bye.away_team = bombers, None
+    bye.home_score, bye.away_score = 0.0, 0.0
+    bye.home_lineup, bye.away_lineup = [], []
+    bye.home_projected, bye.away_projected = 0.0, -1
+    league.box_scores.return_value = [game, bye]
+
+    await run_digest(mock_bot, mock_channel, league)
+
+    sent = "\n".join(c.args[0] for c in mock_channel.send.call_args_list)
+    assert "Aces" in sent and "Comets" in sent
+    assert "Bombers (" not in sent  # no recap or preview line for the bye
+
+
+@pytest.mark.asyncio
 async def test_inactive_check_failures_notify_admin_once_then_on_recovery(
     mock_bot, mock_channel
 ):
@@ -464,6 +489,40 @@ async def test_broken_discord_ids_file_falls_back_and_tells_admin(
     sent = [c.args[0] for c in mock_channel.send.await_args_list]
     assert any("@everyone" in m and "Injured Starter" in m for m in sent)
     cog._notify_admin.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_alert_is_retried_next_round(mock_bot, mock_channel):
+    """If Discord fails to send an inactive-player alert, the player must not
+    count as notified: the next round tries again."""
+    import asyncio as real_asyncio
+
+    league = Mock(teams=[make_injured_team(1, "Aces")])
+    mock_channel.send.side_effect = [RuntimeError("Discord down"), None]
+    sleeps = 0
+
+    async def fake_sleep(seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 2:
+            raise _StopLoop
+
+    with patch.object(FantasyReminders, "reminder_scheduler", return_value=None):
+        cog = FantasyReminders(mock_bot)
+    cog._notify_admin = AsyncMock()
+    cog._player_kickoff = Mock(return_value=None)
+    with (
+        patch("cogs.fantasy_reminders.load_discord_ids", return_value={}),
+        patch("cogs.fantasy_reminders.get_text_channel", return_value=mock_channel),
+        patch("cogs.fantasy_reminders.get_league", return_value=league),
+        patch.object(real_asyncio, "sleep", fake_sleep),
+    ):
+        with pytest.raises(_StopLoop):
+            await cog.inactive_alert_scheduler()
+
+    sent = [c.args[0] for c in mock_channel.send.await_args_list]
+    assert len(sent) == 2  # the failed attempt, then the retry
+    assert "Injured Starter" in sent[1]
 
 
 if __name__ == "__main__":
