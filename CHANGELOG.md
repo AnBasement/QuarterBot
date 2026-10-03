@@ -101,4 +101,4 @@ The first public release. Before this, the bot ran privately for one league.
 - `get_league()` raised `TypeError` instead of `ValueError` when the ESPN settings were missing
 - A pick'em sheet that can't be opened at startup (e.g. a wrong sheet name) is now reported in the admin channel and retried, instead of silently stopping the weekly game posts
 - A reaction that isn't one of the game's two teams (e.g. 👍, or the wrong team) no longer replaces a player's pick on export
-- Without discord_ids.json (or with a broken one), injury warnings stopped completely. They now go out as one general @everyone message
+- Without `discord_ids.json` (or with a broken one), injury warnings stopped completely. They now go out as one general `@everyone` message
