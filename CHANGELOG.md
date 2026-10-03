@@ -37,6 +37,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ### Fixed
 - In leagues where a playoff team has a bye, the weekly recap failed in those weeks (ESPN lists the bye as a matchup without an opponent). Byes are now left out of the recap, awards and preview
 
+### Fixed
+- A cog that failed to load at startup was only logged: the admin channel message was sent before the bot was connected, so it never arrived. Startup problems are now posted to the admin channel once the bot is online
+
 ## [1.0.0] - 25-09-2026
 
 The first public release. Before this, the bot ran privately for one league.

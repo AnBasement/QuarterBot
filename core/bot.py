@@ -47,10 +47,20 @@ COGS = [
 ]
 
 
+# Problems found while starting, before the bot can post anything. Sent to
+# the admin channel once the bot is connected (see on_ready).
+startup_problems: list[str] = []
+
+
 @bot.event
 async def on_ready():
-    """Logs that the bot is connected."""
+    """Logs that the bot is connected and reports any startup problems."""
     logger.info("Bot logged in as %s", bot.user)
+    # on_ready also runs after a reconnect, so each problem is sent only once.
+    problems = startup_problems.copy()
+    startup_problems.clear()
+    for problem in problems:
+        await notify_admin_channel(problem)
 
 
 async def notify_admin_channel(message: str) -> None:
@@ -103,28 +113,34 @@ async def on_command_error(ctx, error):
     )
 
 
+async def load_cogs() -> None:
+    """Loads every cog in COGS. A cog that fails is reported, and the rest
+    still load."""
+    for cog in COGS:
+        try:
+            await bot.load_extension(cog)
+            logger.info("Loaded cog: %s", cog)
+        except commands.ExtensionNotFound as e:
+            logger.error("Cog not found: %s (%s)", cog, e)
+            startup_problems.append(f"[startup] Cog not found: {cog} ({e})")
+        except commands.ExtensionFailed as e:
+            logger.error("Error loading cog %s: %s", cog, e)
+            startup_problems.append(f"[startup] Error loading cog {cog}: {e}")
+        except Exception as e:
+            # Broad on purpose: one broken cog shouldn't stop the others
+            # or the bot from starting.
+            logger.exception("Unexpected error loading cog %s: %s", cog, e)
+            startup_problems.append(
+                f"[startup] Unexpected error loading cog {cog}: {e}"
+            )
+
+
 async def main():
     """Starts the keep-alive server, loads the cogs and runs the bot."""
     setup_logging()  # before anything logs
     keep_alive()
     async with bot:
-        for cog in COGS:
-            try:
-                await bot.load_extension(cog)
-                logger.info("Loaded cog: %s", cog)
-            except commands.ExtensionNotFound as e:
-                logger.error("Cog not found: %s (%s)", cog, e)
-                await notify_admin_channel(f"[startup] Cog not found: {cog} ({e})")
-            except commands.ExtensionFailed as e:
-                logger.error("Error loading cog %s: %s", cog, e)
-                await notify_admin_channel(f"[startup] Could not find cog {cog}: {e}")
-            except Exception as e:
-                # Broad on purpose: one broken cog shouldn't stop the others
-                # or the bot from starting.
-                logger.exception("Unexpected error loading cog %s: %s", cog, e)
-                await notify_admin_channel(
-                    f"[startup] Unexpected error loading cog {cog}: {e}"
-                )
+        await load_cogs()
 
         if TOKEN is None:
             raise ValueError("TOKEN not defined in environment variables")
