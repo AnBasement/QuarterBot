@@ -34,6 +34,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ### Fixed
 - A `discord_ids.json` that was valid JSON but not `{...}` (e.g. a list), or that couldn't be read, stopped the injury warnings until the bot restarted. It's now treated like a broken file: warnings go to `@everyone` and the admin channel is told
 
+### Fixed
+- In leagues where a playoff team has a bye, the weekly recap failed in those weeks (ESPN lists the bye as a matchup without an opponent). Byes are now left out of the recap, awards and preview
+
 ## [1.0.0] - 25-09-2026
 
 The first public release. Before this, the bot ran privately for one league.

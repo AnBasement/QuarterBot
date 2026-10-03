@@ -370,6 +370,31 @@ async def test_big_league_digest_is_split_under_discords_limit(mock_bot, mock_ch
 
 
 @pytest.mark.asyncio
+async def test_playoff_bye_is_skipped_not_a_crash(mock_bot, mock_channel):
+    """In playoff weeks a team with a bye has a box score with no opponent
+    (None). The recap and preview leave it out instead of failing."""
+    aces, bombers, comets = (
+        make_digest_team("Aces", 9),
+        make_digest_team("Bombers", 8),
+        make_digest_team("Comets", 7),
+    )
+    league = make_digest_league(16, [aces, bombers, comets])
+    game = league.box_scores.return_value[0]  # Aces v Comets
+    bye = Mock()
+    bye.home_team, bye.away_team = bombers, None
+    bye.home_score, bye.away_score = 0.0, 0.0
+    bye.home_lineup, bye.away_lineup = [], []
+    bye.home_projected, bye.away_projected = 0.0, -1
+    league.box_scores.return_value = [game, bye]
+
+    await run_digest(mock_bot, mock_channel, league)
+
+    sent = "\n".join(c.args[0] for c in mock_channel.send.call_args_list)
+    assert "Aces" in sent and "Comets" in sent
+    assert "Bombers (" not in sent  # no recap or preview line for the bye
+
+
+@pytest.mark.asyncio
 async def test_inactive_check_failures_notify_admin_once_then_on_recovery(
     mock_bot, mock_channel
 ):
