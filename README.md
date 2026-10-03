@@ -16,6 +16,8 @@ The league's weekly winner-pick pool. Each week, participants pick a winner by r
 
 The feature's display name is configurable via `GAME_NAME` (default `Weekly Pick'em`).
 
+- Posts each week's games automatically, one message per game
+- Reminds everyone before the Thursday game (two hours before kickoff) and the first Sunday game (one hour before), moved to 22:00 the evening before if that falls in the night (22:00-08:00)
 - Integrated with the Google Sheets API
 - Records participants' picks and writes them to a Sheets tab
 - Locks picks automatically at the first Sunday kickoff (the first game of the week in the playoffs), so later picks don't count. Thursday and Saturday games are on the honor system
@@ -31,7 +33,7 @@ No code or environment variable changes needed: the bot checks for a matching em
 
 ### PPR
 
-PPR is the fantasy league's own "power ranking", a number that attempts to capture how well a team did over a season, based on total points scored, lowest single-game score, and win rate, normalized against the rest of the league's results. This is heavily inspired/ripped off from the Oklahomiraqi League's OPR system. The formula itself lives in the Google Sheet's template, not in this codebase. The bot only reads the already-calculated value, so any league using this bot inherits the same formula automatically unless they edit their own copy of the spreadsheet.
+PPR is the fantasy league's own "power ranking", a number that attempts to capture how well a team did over a season, based on average points per game, the highest and lowest single-game scores, and win rate, normalized against the rest of the league's results. This is heavily inspired/ripped off from the Oklahomiraqi League's OPR system. The formula itself lives in the Google Sheet's template, not in this codebase. The bot only reads the already-calculated value, so any league using this bot inherits the same formula automatically unless they edit their own copy of the spreadsheet.
 
 The formula, in plain terms:
 
@@ -57,9 +59,21 @@ Add your own `!commands` that reply with a fixed message, like links or inside j
 
 Each entry is `"command name": "reply"`, so the example above gives `!rules` and `!doink`. On Render, upload the file as a Secret File named `custom_commands.json`. The file is optional, and a broken one is logged and skipped rather than stopping the bot. Built-in command names (like `export`) can't be used.
 
+### Transactions
+
+Posts every add, drop, waiver claim and completed trade in the ESPN league to its own channel, within about a minute of it happening (trade proposals aren't posted). Optional: set `TRANSACTIONS_CHANNEL_ID` to switch it on. The bot remembers the last move it posted in a `Transactions` tab it creates in the pick'em spreadsheet, so a restart doesn't post anything twice.
+
 ### Other
 
 The bot sends a reminder every Tuesday not to forget waivers before the new week starts.
+
+### Weekly recap
+
+Every Tuesday at 18:00 (league time), right after the waiver reminder, the bot posts a recap of the fantasy week just played: every matchup's score, the week's awards (nail-biter, top and lowest scorer, best bench, over- and underachiever compared to ESPN's projections) and the current win and loss streaks of three or more. Then a preview of the coming week's matchups, or, after the final week, the final standings with medals.
+
+### Inactive-player alerts
+
+About an hour before kickoff, the bot checks every team's starting lineup for players who are Out, Doubtful, Inactive or suspended, and warns the manager (kept out of the night, like the reminders). With `discord_ids.json` it pings the right person; without it, it posts one general `@everyone` message.
 
 ## Planned features
 
@@ -182,6 +196,7 @@ Settings are given to the bot as "environment variables": named values like `GAM
 | `PPR_MANAGERS` | Yes, for `!ppr` | One entry per manager, separated by `;`: the manager's tab name in the league sheet, optionally followed by `=` and the team name to show, e.g. `Alice=Aces;Bob=Bombers`. Update when managers join/leave or rename their team |
 | `PPR_HISTORY_SHEET_NAME` | No (default `PPR History`) | Name of the Sheets tab that stores PPR snapshot history |
 | `FANTASY_FINAL_WEEK` | No (default `17`) | Final week of the league's ESPN fantasy season (regular + playoff weeks); check your own league's ESPN settings |
+| `TRANSACTIONS_CHANNEL_ID` | No | Channel for league moves (adds, drops, waiver claims, trades). Leave it out to switch the feature off |
 
 **Bot-posted message text:** everything the bot says in Discord (reminders, confirmations, the weekly matchup digest, inactive-player alerts, and so on) is also configurable, each with a neutral English default. See `.env.example` for every variable name, its default, and any `{placeholder}` values a message fills in. No code changes are needed to run the bot in your own language or wording.
 
@@ -206,7 +221,7 @@ Besides the settings, the bot reads these files from its folder:
 5. **Secret Files** (in the same Environment page): upload `credentials.json`, and `discord_ids.json` / `custom_commands.json` if you made them. Use exactly those file names.
 6. **Deploy**, and watch the logs. After a minute or so you should see `Bot logged in as …`, and the bot comes online in Discord. Try `!ping`.
 
-On its first start the bot creates the `State` tab in your pick'em sheet, then posts this week's games in your game channel. From then on it runs on its own: games are posted each week, picks are locked at the first Sunday kickoff, and the week is scored automatically on Tuesday.
+On its first start the bot creates the `State` tab in your pick'em sheet, then posts this week's games in your game channel. From then on it runs on its own: games are posted each week, picks are locked at the first Sunday kickoff, and from Tuesday 18:00, once all the week's games are final, the week is scored and next week's games are posted.
 
 **About Render's free plan:** a free web service goes to sleep after a period without web traffic, and a sleeping bot is offline in Discord. The bot runs a small web page (`Bot is running!`) for exactly this reason: either use a paid instance, or point a free uptime-monitoring service at your Render URL so it's visited every few minutes. Check Render's current plans, as their free tier changes from time to time.
 
@@ -237,7 +252,7 @@ Put `credentials.json` (and the optional JSON files) in the same folder. Don't r
 
 ```text
 ├── cogs/                           # Discord bot modules
-│   ├── fantasy_reminders.py        # Waiver and kickoff reminders
+│   ├── fantasy_reminders.py        # Waiver reminder, weekly recap, inactive-player alerts
 │   ├── pickem.py                   # Core logic for the pick'em game
 │   ├── ppr.py                      # Updates the PPR leaderboard
 │   ├── responses.py                # Custom commands from custom_commands.json
