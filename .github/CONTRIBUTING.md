@@ -44,7 +44,7 @@ pip install -r requirements.txt
 
 ## Checks
 
-Run these before opening a pull request. CI runs the same checks (except `black`) on every pull request.
+Run these before opening a pull request. CI runs the same checks on every pull request.
 
 ```bash
 black .

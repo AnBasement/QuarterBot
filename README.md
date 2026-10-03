@@ -211,7 +211,7 @@ Besides the settings, the bot reads these files from its folder:
 5. **Secret Files** (in the same Environment page): upload `credentials.json`, and `discord_ids.json` / `custom_commands.json` if you made them. Use exactly those file names.
 6. **Deploy**, and watch the logs. After a minute or so you should see `Bot logged in as …`, and the bot comes online in Discord. Try `!ping`.
 
-On its first start the bot creates the `State` tab in your pick'em sheet, then posts this week's games in your game channel. From then on it runs on its own: games are posted each week, picks are locked at the first Sunday kickoff, and the week is scored automatically on Tuesday.
+On its first start the bot creates the `State` tab in your pick'em sheet, then posts this week's games in your game channel. From then on it runs on its own: games are posted each week, picks are locked at the first Sunday kickoff, and from Tuesday 18:00, once all the week's games are final, the week is scored and next week's games are posted.
 
 **About Render's free plan:** a free web service goes to sleep after a period without web traffic, and a sleeping bot is offline in Discord. The bot runs a small web page (`Bot is running!`) for exactly this reason: either use a paid instance, or point a free uptime-monitoring service at your Render URL so it's visited every few minutes. Check Render's current plans, as their free tier changes from time to time.
 
