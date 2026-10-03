@@ -1,6 +1,8 @@
 """Global test fixtures for mocking gspread/OAuth without credentials."""
 
 import os
+
+import dotenv
 from unittest.mock import MagicMock
 import pytest
 import google.oauth2.service_account as google_auth
@@ -13,6 +15,10 @@ from cogs import sheets
 os.environ.setdefault("REMINDER_CHANNEL_ID", "111111111111111111")
 os.environ.setdefault("GAME_CHANNEL_ID", "222222222222222222")
 os.environ.setdefault("ADMIN_CHANNEL_ID", "333333333333333333")
+
+# Tests must never load the developer's real .env: core/bot.py calls
+# load_dotenv() when imported. (test_bot.py tests .env loading in a subprocess.)
+setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
 
 
 @pytest.fixture(autouse=True)
