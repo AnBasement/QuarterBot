@@ -1,5 +1,7 @@
 """Tests for data/discord_ids.py."""
 
+from pathlib import Path
+
 import pytest
 
 from data.discord_ids import load_discord_ids
@@ -43,6 +45,20 @@ def test_json_that_is_not_an_object_is_a_value_error(tmp_path, text):
 def test_unreadable_file_is_a_value_error(tmp_path):
     """A folder where the file should be: reading it fails with an OSError."""
     (tmp_path / "discord_ids.json").mkdir()
+
+    with pytest.raises(ValueError):
+        load_discord_ids(tmp_path / "discord_ids.json")
+
+
+def test_file_in_an_unreadable_folder_is_a_value_error(tmp_path, monkeypatch):
+    """A folder the bot can't read must count as a broken file, not stop the
+    injury warnings. There, even checking whether the file exists fails."""
+
+    def locked(*args, **kwargs):
+        raise PermissionError("no access")
+
+    monkeypatch.setattr(Path, "exists", locked)
+    monkeypatch.setattr(Path, "read_text", locked)
 
     with pytest.raises(ValueError):
         load_discord_ids(tmp_path / "discord_ids.json")
