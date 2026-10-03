@@ -28,6 +28,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 - Export and results read the pick'em players' Discord IDs without a time limit, freezing the bot while Google answered, and a Google error there wasn't reported as an export or results error. That read now works like every other spreadsheet call
 - A failed Google login during the pick lock posted to the admin channel on every retry, instead of being retried quietly like other Google hiccups
 
+### Fixed
+- An inactive-player alert that Discord failed to send was never retried: the player already counted as notified. It's now sent in the next check, 10 minutes later
+
 ## [1.0.0] - 25-09-2026
 
 The first public release. Before this, the bot ran privately for one league.
