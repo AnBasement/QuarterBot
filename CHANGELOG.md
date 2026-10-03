@@ -9,6 +9,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ### Added
 - Picks lock automatically at the first Sunday kickoff (the first game of the week in the playoffs): they're exported to the sheet then, so later reactions don't count. Thursday and Saturday games are on the honor system. A failed lock is retried for an hour, and the admin channel is told once if it still hasn't worked after 10 minutes. If it never works, picks are exported on Tuesday as before
 - The `State` tab gets a third column, `last_exported_week`, added automatically to existing tabs
+- A transactions channel: every add, drop, waiver claim and completed trade in the ESPN league is posted as it happens. Switch it on with `TRANSACTIONS_CHANNEL_ID`; the message text is configurable like the rest (`TRANSACTION_*` in `.env.example`)
 
 ### Changed
 - The Sunday reminder's default text says that picks lock at kickoff
