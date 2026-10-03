@@ -15,6 +15,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 - The Sunday reminder's default text says that picks lock at kickoff
 - The Tuesday run only scores weeks that were locked; it no longer exports them again
 - ESPN or Google hiccups during the pick lock are retried quietly instead of posting to the admin channel on every attempt
+- The health check page returns an error (503) while the bot isn't connected to Discord, instead of always saying it's running. With Render's Health Check Path set to `/`, a bot that loses its connection gets restarted
 - The bot logs in to Google once and reuses the connection, instead of logging in again for every spreadsheet action. If you replace `credentials.json`, restart the bot
 - Weeks are scored from Tuesday 18:00, as soon as ESPN has marked every game final, and the next week's games are posted right after. Before, both waited until ESPN switched weeks on Wednesday morning. The week waits for delayed games
 - The Super Bowl week's games are posted right after the conference championships, since the Pro Bowl week in between has nothing to pick
