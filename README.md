@@ -16,6 +16,8 @@ The league's weekly winner-pick pool. Each week, participants pick a winner by r
 
 The feature's display name is configurable via `GAME_NAME` (default `Weekly Pick'em`).
 
+- Posts each week's games automatically, one message per game
+- Reminds everyone before the Thursday game (two hours before kickoff) and the first Sunday game (one hour before), moved to 22:00 the evening before if that falls in the night (22:00-08:00)
 - Integrated with the Google Sheets API
 - Records participants' picks and writes them to a Sheets tab
 - Locks picks automatically at the first Sunday kickoff (the first game of the week in the playoffs), so later picks don't count. Thursday and Saturday games are on the honor system
@@ -31,7 +33,7 @@ No code or environment variable changes needed: the bot checks for a matching em
 
 ### PPR
 
-PPR is the fantasy league's own "power ranking", a number that attempts to capture how well a team did over a season, based on total points scored, lowest single-game score, and win rate, normalized against the rest of the league's results. This is heavily inspired/ripped off from the Oklahomiraqi League's OPR system. The formula itself lives in the Google Sheet's template, not in this codebase. The bot only reads the already-calculated value, so any league using this bot inherits the same formula automatically unless they edit their own copy of the spreadsheet.
+PPR is the fantasy league's own "power ranking", a number that attempts to capture how well a team did over a season, based on average points per game, the highest and lowest single-game scores, and win rate, normalized against the rest of the league's results. This is heavily inspired/ripped off from the Oklahomiraqi League's OPR system. The formula itself lives in the Google Sheet's template, not in this codebase. The bot only reads the already-calculated value, so any league using this bot inherits the same formula automatically unless they edit their own copy of the spreadsheet.
 
 The formula, in plain terms:
 
@@ -64,6 +66,14 @@ Posts every add, drop, waiver claim and completed trade in the ESPN league to it
 ### Other
 
 The bot sends a reminder every Tuesday not to forget waivers before the new week starts.
+
+### Weekly recap
+
+Every Tuesday at 18:00 (league time), right after the waiver reminder, the bot posts a recap of the fantasy week just played: every matchup's score, the week's awards (nail-biter, top and lowest scorer, best bench, over- and underachiever compared to ESPN's projections) and the current win and loss streaks of three or more. Then a preview of the coming week's matchups, or, after the final week, the final standings with medals.
+
+### Inactive-player alerts
+
+About an hour before kickoff, the bot checks every team's starting lineup for players who are Out, Doubtful, Inactive or suspended, and warns the manager (kept out of the night, like the reminders). With `discord_ids.json` it pings the right person; without it, it posts one general `@everyone` message.
 
 ## Planned features
 
@@ -242,7 +252,7 @@ Put `credentials.json` (and the optional JSON files) in the same folder. Don't r
 
 ```text
 ├── cogs/                           # Discord bot modules
-│   ├── fantasy_reminders.py        # Waiver and kickoff reminders
+│   ├── fantasy_reminders.py        # Waiver reminder, weekly recap, inactive-player alerts
 │   ├── pickem.py                   # Core logic for the pick'em game
 │   ├── ppr.py                      # Updates the PPR leaderboard
 │   ├── responses.py                # Custom commands from custom_commands.json
