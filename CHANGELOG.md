@@ -15,6 +15,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 - The Sunday reminder's default text says that picks lock at kickoff
 - The Tuesday run only scores weeks that were locked; it no longer exports them again
 - ESPN or Google hiccups during the pick lock are retried quietly instead of posting to the admin channel on every attempt
+- The bot logs in to Google once and reuses the connection, instead of logging in again for every spreadsheet action. If you replace `credentials.json`, restart the bot
 - Weeks are scored from Tuesday 18:00, as soon as ESPN has marked every game final, and the next week's games are posted right after. Before, both waited until ESPN switched weeks on Wednesday morning. The week waits for delayed games
 - The Super Bowl week's games are posted right after the conference championships, since the Pro Bowl week in between has nothing to pick
 - A game still not final 60 hours after the week's last kickoff (postponed or canceled) no longer holds the week up: the week is scored without it, and the admin channel is told
@@ -27,20 +28,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 - The Thursday game reminder could be skipped: the bot looked for Thursday's game on Wednesday morning, before ESPN had switched to the new week, found last week's game, and went back to sleep until Saturday. Reminders now ask ESPN for the games on that date
 - Export and results read the pick'em players' Discord IDs without a time limit, freezing the bot while Google answered, and a Google error there wasn't reported as an export or results error. That read now works like every other spreadsheet call
 - A failed Google login during the pick lock posted to the admin channel on every retry, instead of being retried quietly like other Google hiccups
-
-### Fixed
 - An inactive-player alert that Discord failed to send was never retried: the player already counted as notified. It's now sent in the next check, 10 minutes later
-
-### Fixed
 - A `discord_ids.json` that was valid JSON but not `{...}` (e.g. a list), or that couldn't be read, stopped the injury warnings until the bot restarted. It's now treated like a broken file: warnings go to `@everyone` and the admin channel is told
-
-### Fixed
 - In leagues where a playoff team has a bye, the weekly recap failed in those weeks (ESPN lists the bye as a matchup without an opponent). Byes are now left out of the recap, awards and preview
-
-### Fixed
 - A cog that failed to load at startup was only logged: the admin channel message was sent before the bot was connected, so it never arrived. Startup problems are now posted to the admin channel once the bot is online
-
-### Fixed
 - `!ppr` froze the whole bot while Google answered some of its spreadsheet calls. They now run in the background, and the list of tabs is fetched once instead of twice
 - A Google hiccup while the bot started disabled `!ppr` until the next restart. The league spreadsheet is now opened the first time `!ppr` needs it
 

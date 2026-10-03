@@ -8,6 +8,8 @@ import pytest
 import google.oauth2.service_account as google_auth
 import gspread
 
+from cogs import sheets
+
 # data/channel_ids.py reads these at import time, which happens during test
 # collection, before any fixture runs.
 os.environ.setdefault("REMINDER_CHANNEL_ID", "111111111111111111")
@@ -45,6 +47,8 @@ def mock_gspread(monkeypatch):
     mock_sheet.spreadsheet = mock_spreadsheet
 
     monkeypatch.setattr(gspread, "authorize", lambda *a, **kw: mock_client)
+    # get_client() remembers its client; start every test without one.
+    monkeypatch.setattr(sheets, "_client", None)
 
     # Defaults; tests can override them on the returned mock_sheet.
     mock_sheet.row_values.return_value = ["ID1", "ID2", "ID3"]
