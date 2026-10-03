@@ -11,12 +11,7 @@ import gspread.exceptions
 from gspread.utils import rowcol_to_a1
 import requests
 from discord.ext import commands
-from core.errors import (
-    PPRFetchError,
-    PPRSnapshotError,
-    MissingCredentialsError,
-    ClientAuthorizationError,
-)
+from core.errors import PPRFetchError, PPRSnapshotError
 from cogs.sheets import get_client
 from core.decorators import admin_only
 from data.channel_ids import ADMIN_CHANNEL_ID
@@ -41,22 +36,22 @@ class PPR(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        try:
-            self.sheet = get_client().open(LEAGUE_SHEET_NAME)
-            logger.info("PPR Cog: Connected to Google Sheets")
-        except (
-            MissingCredentialsError,
-            ClientAuthorizationError,
-            gspread.exceptions.GSpreadException,
-            requests.exceptions.RequestException,
-        ) as e:
-            logger.error("PPR Cog: Could not connect to Google Sheets: %s", e)
-            asyncio.get_running_loop().create_task(
-                self._notify_admin(
-                    f"[ppr] PPR Cog: Could not connect to Google Sheets: {e}"
-                )
+        # Opened on first use (see _spreadsheet()), so a Google hiccup while the
+        # bot starts doesn't disable !ppr until the next restart.
+        self.sheet: gspread.Spreadsheet | None = None
+
+    async def _spreadsheet(self) -> gspread.Spreadsheet:
+        """The league spreadsheet, opened on first use and reused after that.
+
+        Logging in and opening both wait for Google, so they run in a thread.
+        A failed open raises and is tried again on the next call.
+        """
+        if self.sheet is None:
+            self.sheet = await asyncio.to_thread(
+                lambda: get_client().open(LEAGUE_SHEET_NAME)
             )
-            raise
+            logger.info("PPR Cog: Connected to Google Sheets")
+        return self.sheet
 
     async def _notify_admin(self, message: str) -> None:
         """Posts to the admin channel. A failed send is logged, never raised."""
@@ -89,10 +84,11 @@ class PPR(commands.Cog):
 
         managers = []
         logger.info("Fetching PPR data for season %s", season)
-        ws_titles = [ws.title for ws in self.sheet.worksheets()]
-        logger.info("Found sheet: %s", ws_titles)
+        spreadsheet = await self._spreadsheet()
+        worksheets = await asyncio.to_thread(spreadsheet.worksheets)
+        logger.info("Found sheet: %s", [ws.title for ws in worksheets])
 
-        for ws in self.sheet.worksheets():
+        for ws in worksheets:
             ws_title_norm = ws.title.strip().lower()
             if ws_title_norm not in target_names_normalized:
                 continue
@@ -143,13 +139,19 @@ class PPR(commands.Cog):
 
     async def _save_snapshot(self, managers: List[Dict[str, Any]]) -> None:
         """Appends team, PPR and rank rows to the history tab, in the given order."""
+        spreadsheet = await self._spreadsheet()
         try:
-            history_ws = self.sheet.worksheet(PPR_HISTORY_SHEET_NAME)
+            history_ws = await asyncio.to_thread(
+                spreadsheet.worksheet, PPR_HISTORY_SHEET_NAME
+            )
             logger.debug("Found existing PPR history sheet")
         except gspread.exceptions.WorksheetNotFound:
             logger.info("Creating new PPR history sheet")
-            history_ws = self.sheet.add_worksheet(
-                title=PPR_HISTORY_SHEET_NAME, rows=1000, cols=10
+            history_ws = await asyncio.to_thread(
+                spreadsheet.add_worksheet,
+                title=PPR_HISTORY_SHEET_NAME,
+                rows=1000,
+                cols=10,
             )
 
         rows_to_add = []
@@ -199,8 +201,11 @@ class PPR(commands.Cog):
         try:
             managers = await self._get_managers()
             managers_sorted = sorted(managers, key=lambda x: x["ppr"], reverse=True)
+            spreadsheet = await self._spreadsheet()
             try:
-                history_ws = self.sheet.worksheet(PPR_HISTORY_SHEET_NAME)
+                history_ws = await asyncio.to_thread(
+                    spreadsheet.worksheet, PPR_HISTORY_SHEET_NAME
+                )
                 rows = await asyncio.wait_for(
                     asyncio.to_thread(history_ws.get_all_values), timeout=10
                 )

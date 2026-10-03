@@ -1,14 +1,4 @@
-"""Handles bot errors."""
-
-__all__ = (
-    "BotError",
-    "PPRFetchError",
-    "PPRSnapshotError",
-    "SheetsError",
-    "MissingCredentialsError",
-    "ClientAuthorizationError",
-    "SheetNotFoundError",
-)
+"""The bot's own exception classes."""
 
 
 class BotError(Exception):
@@ -16,7 +6,7 @@ class BotError(Exception):
 
 
 class PPRFetchError(BotError):
-    """Raised when PPR (Player Power Rating) cannot be fetched for a team.
+    """Raised when a team's PPR (the league's power ranking) cannot be fetched.
 
     Attributes:
         team_name (str): Name of the team PPR could not be fetched for
@@ -89,13 +79,13 @@ class SheetNotFoundError(SheetsError):
         self.sheet_name = sheet_name
         self.worksheet_index = worksheet_index
         self.message = message or (
-            f"Could not open '{sheet_name}' or {worksheet_index}"
+            f"Could not open tab {worksheet_index} of '{sheet_name}'"
         )
         super().__init__(self.message)
 
 
 class PickemError(BotError):
-    """Base class for all errors related to the betting cog."""
+    """Base class for all errors related to the pick'em cog."""
 
 
 class APIFetchError(PickemError):
@@ -149,16 +139,4 @@ class ResultsError(PickemError):
 
     def __init__(self, message: str | None = None):
         self.message = message or ("Error updating results in Sheets")
-        super().__init__(self.message)
-
-
-class ReminderError(PickemError):
-    """Raised when a reminder task fails.
-
-    Used by the reminder-schedulers when something goes wrong while attempting
-    to send Discord messages.
-    """
-
-    def __init__(self, message: str | None = None):
-        self.message = message or "Error in reminder task"
         super().__init__(self.message)

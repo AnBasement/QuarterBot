@@ -38,8 +38,21 @@ def get_creds() -> Credentials:
         ) from e
 
 
+# The logged-in client, created on first use and reused after that. gspread
+# renews Google's access token by itself, so one client lasts as long as the bot.
+_client: Client | None = None
+
+
 def get_client() -> Client:
-    """Returns a logged-in gspread client."""
+    """Returns the logged-in gspread client, logging in on first use."""
+    global _client
+    if _client is None:
+        _client = _authorize()
+    return _client
+
+
+def _authorize() -> Client:
+    """Logs in to Google with the service account key."""
     try:
         creds = get_creds()
         return gspread.authorize(creds)

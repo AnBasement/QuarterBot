@@ -48,6 +48,16 @@ def test_settings_from_dotenv_file_are_seen_by_data_modules(tmp_path):
     assert result.stdout.strip() == "from-dotenv"
 
 
+def test_importing_the_bot_in_tests_does_not_load_a_real_env(monkeypatch):
+    """Tests must never see the developer's real .env (see tests/conftest.py)."""
+    import core.bot
+
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+    core.bot.load_dotenv()
+
+    assert "DISCORD_TOKEN" not in os.environ
+
+
 class TestOnCommandError:
     """Expected user mistakes get a reply, not an admin alert."""
 
@@ -99,3 +109,46 @@ class TestOnCommandError:
         from cogs.pickem import Pickem
 
         assert "on_command_error" not in dict(Pickem.__cog_listeners__)
+
+
+class TestStartupProblems:
+    """Startup happens before the bot is connected, so problems are kept and
+    sent to the admin channel once it is."""
+
+    @pytest.mark.asyncio
+    async def test_failed_cog_is_queued_not_sent_while_offline(self, monkeypatch):
+        from unittest.mock import AsyncMock
+        from discord.ext import commands
+        import core.bot
+
+        notify = AsyncMock()
+        monkeypatch.setattr(core.bot, "notify_admin_channel", notify)
+        monkeypatch.setattr(core.bot, "startup_problems", [])
+        monkeypatch.setattr(core.bot, "COGS", ["cogs.broken"])
+        monkeypatch.setattr(
+            core.bot.bot,
+            "load_extension",
+            AsyncMock(
+                side_effect=commands.ExtensionFailed("cogs.broken", RuntimeError("x"))
+            ),
+        )
+
+        await core.bot.load_cogs()
+
+        notify.assert_not_awaited()
+        assert len(core.bot.startup_problems) == 1
+        assert "Error loading cog cogs.broken" in core.bot.startup_problems[0]
+
+    @pytest.mark.asyncio
+    async def test_queued_problems_are_sent_once_connected(self, monkeypatch):
+        from unittest.mock import AsyncMock
+        import core.bot
+
+        notify = AsyncMock()
+        monkeypatch.setattr(core.bot, "notify_admin_channel", notify)
+        monkeypatch.setattr(core.bot, "startup_problems", ["[startup] boom"])
+
+        await core.bot.on_ready()
+        await core.bot.on_ready()  # a reconnect must not send it again
+
+        notify.assert_awaited_once_with("[startup] boom")
