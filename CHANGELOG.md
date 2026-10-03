@@ -9,11 +9,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ### Added
 - Picks lock automatically at the first Sunday kickoff (the first game of the week in the playoffs): they're exported to the sheet then, so later reactions don't count. Thursday and Saturday games are on the honor system. A failed lock is retried for an hour, and the admin channel is told once if it still hasn't worked after 10 minutes. If it never works, picks are exported on Tuesday as before
 - The `State` tab gets a third column, `last_exported_week`, added automatically to existing tabs
+- A transactions channel: every add, drop, waiver claim and completed trade in the ESPN league is posted within about a minute. Switch it on with `TRANSACTIONS_CHANNEL_ID`; the message text is configurable like the rest (`TRANSACTION_*` in `.env.example`)
 
 ### Changed
 - The Sunday reminder's default text says that picks lock at kickoff
 - The Tuesday run only scores weeks that were locked; it no longer exports them again
 - ESPN or Google hiccups during the pick lock are retried quietly instead of posting to the admin channel on every attempt
+- Weeks are scored from Tuesday 18:00, as soon as ESPN has marked every game final, and the next week's games are posted right after. Before, both waited until ESPN switched weeks on Wednesday morning. The week waits for delayed games
+- The Super Bowl week's games are posted right after the conference championships, since the Pro Bowl week in between has nothing to pick
+- A game still not final 60 hours after the week's last kickoff (postponed or canceled) no longer holds the week up: the week is scored without it, and the admin channel is told
+
+### Fixed
+- An unplayed game (postponed or canceled) was scored as a 0-0 tie. It's now void: nobody gets points for it
+- A Discord error while posting the week's games stopped the weekly posting until the bot restarted. It's now retried an hour later
+- Any other unexpected error in the weekly scoring and posting (e.g. ESPN changing its data format) also stopped it silently until a restart. It's now logged, reported to the admin channel and retried an hour later, like the other scheduled tasks
+- If the game channel couldn't be found, the week was still announced and marked as posted, without any games, and never retried. It's now retried every hour, and the admin channel is told once
+- The Thursday game reminder could be skipped: the bot looked for Thursday's game on Wednesday morning, before ESPN had switched to the new week, found last week's game, and went back to sleep until Saturday. Reminders now ask ESPN for the games on that date
+- Export and results read the pick'em players' Discord IDs without a time limit, freezing the bot while Google answered, and a Google error there wasn't reported as an export or results error. That read now works like every other spreadsheet call
+- A failed Google login during the pick lock posted to the admin channel on every retry, instead of being retried quietly like other Google hiccups
+
+### Fixed
+- An inactive-player alert that Discord failed to send was never retried: the player already counted as notified. It's now sent in the next check, 10 minutes later
 
 ### Fixed
 - A `discord_ids.json` that was valid JSON but not `{...}` (e.g. a list), or that couldn't be read, stopped the injury warnings until the bot restarted. It's now treated like a broken file: warnings go to `@everyone` and the admin channel is told

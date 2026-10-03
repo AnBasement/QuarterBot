@@ -48,6 +48,16 @@ def test_settings_from_dotenv_file_are_seen_by_data_modules(tmp_path):
     assert result.stdout.strip() == "from-dotenv"
 
 
+def test_importing_the_bot_in_tests_does_not_load_a_real_env(monkeypatch):
+    """Tests must never see the developer's real .env (see tests/conftest.py)."""
+    import core.bot
+
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+    core.bot.load_dotenv()
+
+    assert "DISCORD_TOKEN" not in os.environ
+
+
 class TestOnCommandError:
     """Expected user mistakes get a reply, not an admin alert."""
 

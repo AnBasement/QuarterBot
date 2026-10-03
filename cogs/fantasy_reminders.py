@@ -60,6 +60,9 @@ logger = logging.getLogger(__name__)
 # (get_league(), league.box_scores()) go through asyncio.to_thread().
 
 
+# One inactive-player alert: (team ID, player ID or name, kickoff time).
+AlertKey = tuple[int, str | int | None, str | None]
+
 # After a restart later than this on a Tuesday, assume the Tuesday messages
 # already went out. What was sent is only kept in memory.
 WAIVER_REMINDER_LATE_LIMIT = timedelta(hours=1)
@@ -72,7 +75,7 @@ class FantasyReminders(commands.Cog):
         self.bot: Bot = bot
         self.league_tz = pytz.timezone(LEAGUE_TIMEZONE)
         self.last_waiver_week: int | None = None
-        self.inactive_notified: set[tuple[int, str | int | None, str | None]] = set()
+        self.inactive_notified: set[AlertKey] = set()
         self.bot.loop.create_task(self.reminder_scheduler())
         self.bot.loop.create_task(self.inactive_alert_scheduler())
 
@@ -508,11 +511,15 @@ class FantasyReminders(commands.Cog):
             try:
                 league = await asyncio.to_thread(get_league)
                 missing_id_flags: list[str] = []
+                # Players in the @everyone message, marked as notified once
+                # it's actually sent.
+                missing_id_keys: list[AlertKey] = []
                 for team in league.teams:
                     discord_id = id_map.get(team.team_id)
                     team_display = getattr(team, "team_name", f"Team {team.team_id}")
 
                     flagged: list[tuple[str, str, datetime | None]] = []
+                    flagged_keys: list[AlertKey] = []
                     for player in team.roster:
                         slot = getattr(player, "lineupSlot", "")
                         if slot in {"BE", "IR"}:
@@ -547,7 +554,9 @@ class FantasyReminders(commands.Cog):
                             continue
 
                         flagged.append((player.name, status, kickoff))
-                        self.inactive_notified.add(unique_key)
+                        # Marked as notified only after the message is sent, so
+                        # a failed send is retried in the next round.
+                        flagged_keys.append(unique_key)
 
                     if flagged and discord_id is not None:
                         lines = [INACTIVE_ALERT_HEADER_TEMPLATE.format(user=discord_id)]
@@ -561,6 +570,7 @@ class FantasyReminders(commands.Cog):
                                 )
                             )
                         await channel.send("\n".join(lines))
+                        self.inactive_notified.update(flagged_keys)
                         if isinstance(admin_channel, discord.TextChannel):
                             msg = (
                                 f"[inactive-alert] Notified <@{discord_id}> about "
@@ -568,6 +578,7 @@ class FantasyReminders(commands.Cog):
                             )
                             await admin_channel.send(msg)
                     elif flagged and discord_id is None:
+                        missing_id_keys.extend(flagged_keys)
                         for name, status, kickoff in flagged:
                             when_txt = (
                                 kickoff.strftime("%H:%M") if kickoff else SOON_LABEL
@@ -585,6 +596,7 @@ class FantasyReminders(commands.Cog):
                     lines = [INACTIVE_FALLBACK_HEADER]
                     lines.extend(missing_id_flags)
                     await channel.send("\n".join(lines))
+                    self.inactive_notified.update(missing_id_keys)
                     if isinstance(admin_channel, discord.TextChannel):
                         await admin_channel.send(
                             f"[inactive-alert] Sent @everyone fallback for "
