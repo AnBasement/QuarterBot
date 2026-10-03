@@ -2,7 +2,6 @@
 
 from unittest.mock import AsyncMock, MagicMock
 from datetime import date, datetime, timedelta
-import re
 import aiohttp
 import discord
 import pytest
@@ -465,12 +464,16 @@ class TestCheckThursdayReminder:
             "cogs.pickem.aiohttp.ClientSession",
             lambda *a, **kw: DummySession(),
         )
+        monkeypatch.setattr(
+            "cogs.pickem.upcoming_nfl_date",
+            lambda target_weekday, now: date(2024, 9, 5),
+        )
 
         result = await cog._fetch_events_for_nfl_weekday(3)
 
         assert result == [{"date": "2024-09-06T00:15Z"}]
         # Asks for a date, not ESPN's current week (see upcoming_nfl_date).
-        assert re.search(r"\?dates=\d{8}$", urls[0])
+        assert urls[0].endswith("?dates=20240905")
 
     @pytest.mark.asyncio
     async def test_reminder_time_clamped_out_of_quiet_hours(self, monkeypatch):
