@@ -42,6 +42,7 @@ COGS = [
     "cogs.pickem",  # matches, export, results
     "cogs.ppr",  # updates and posts PPR
     "cogs.fantasy_reminders",  # general reminders for the fantasy league
+    "cogs.transactions",  # posts league moves (if TRANSACTIONS_CHANNEL_ID is set)
     "cogs.responses",  # custom commands; must load last (see cogs/responses.py)
 ]
 

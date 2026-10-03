@@ -1,7 +1,7 @@
 """Tests for pickem.py."""
 
 from unittest.mock import AsyncMock, MagicMock
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import aiohttp
 import discord
 import pytest
@@ -16,10 +16,13 @@ from cogs.pickem import (
     Pickem,
     is_pickable_game,
     pick_lock_time,
+    next_pickem_week,
+    upcoming_nfl_date,
 )
 from core.utils.quiet_hours import clamp_to_quiet_hours
 from core.errors import (
     APIFetchError,
+    ClientAuthorizationError,
     ExportError,
     NoEventsFoundError,
     SheetNotFoundError,
@@ -40,6 +43,8 @@ def make_cog(**attrs):
     cog.last_processed_week = None
     cog.last_exported_week = None
     cog._lock_missed_week = None
+    cog._unfinished_week = None
+    cog._missing_channel_week = None
     cog.state_loaded = False
     cog._state_dirty = False
     for key, value in attrs.items():
@@ -369,7 +374,7 @@ class TestCheckThursdayReminder:
 
         monkeypatch.setattr("cogs.pickem.asyncio.sleep", fake_sleep)
 
-        async def fetch_stub(target_weekday):
+        async def fetch_stub(target_weekday, now):
             assert target_weekday == 3
             # 20:15 in New York is 17:15 in Los Angeles: reminder at 15:15 Thursday.
             return [{"date": "2024-09-06T00:15Z"}]
@@ -394,7 +399,7 @@ class TestCheckThursdayReminder:
             lambda s: sleep_calls.append(s),
         )
 
-        async def fetch_stub(_target_weekday):
+        async def fetch_stub(_target_weekday, _now):
             return [{"date": "2024-09-05T18:00Z"}]  # kickoff 20:00 Oslo
 
         cog._fetch_events_for_nfl_weekday = fetch_stub
@@ -410,7 +415,7 @@ class TestCheckThursdayReminder:
         channel = MagicMock()
         now = cog.league_tz.localize(datetime(2024, 9, 5, 12, 0))
 
-        async def empty_fetch(_target_weekday):
+        async def empty_fetch(_target_weekday, _now):
             return []
 
         cog._fetch_events_for_nfl_weekday = empty_fetch
@@ -451,16 +456,66 @@ class TestCheckThursdayReminder:
                 pass
 
             def get(self, url, *args, **kwargs):
+                urls.append(url)
                 return DummyResponse()
 
+        urls: list[str] = []
         monkeypatch.setattr(
             "cogs.pickem.aiohttp.ClientSession",
             lambda *a, **kw: DummySession(),
         )
+        monkeypatch.setattr(
+            "cogs.pickem.upcoming_nfl_date",
+            lambda target_weekday, now: date(2024, 9, 5),
+        )
 
-        result = await cog._fetch_events_for_nfl_weekday(3)
+        any_moment = cog.league_tz.localize(datetime(2024, 9, 5, 12, 0))
+        result = await cog._fetch_events_for_nfl_weekday(3, any_moment)
 
         assert result == [{"date": "2024-09-06T00:15Z"}]
+        # Asks for a date, not ESPN's current week (see upcoming_nfl_date).
+        assert urls[0].endswith("?dates=20240905")
+
+    @pytest.mark.asyncio
+    async def test_fetch_uses_the_leagues_date_west_of_eastern(self, monkeypatch):
+        """For a league west of US Eastern, Thursday evening local is already
+        Friday in New York. The fetch must still ask for this Thursday, not
+        next week's, or the bot sleeps past that week's Sunday reminder."""
+        cog = make_cog()
+
+        class DummyResponse:
+            async def json(self):
+                return {"events": []}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                pass
+
+        class DummySession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                pass
+
+            def get(self, url, *args, **kwargs):
+                urls.append(url)
+                return DummyResponse()
+
+        urls: list[str] = []
+        monkeypatch.setattr(
+            "cogs.pickem.aiohttp.ClientSession",
+            lambda *a, **kw: DummySession(),
+        )
+        # Thursday 21:30 in Los Angeles is Friday 00:30 in New York.
+        la = pytz.timezone("America/Los_Angeles")
+        now = la.localize(datetime(2026, 10, 1, 21, 30))
+
+        await cog._fetch_events_for_nfl_weekday(3, now)
+
+        assert urls[0].endswith("?dates=20261001")
 
     @pytest.mark.asyncio
     async def test_reminder_time_clamped_out_of_quiet_hours(self, monkeypatch):
@@ -480,7 +535,7 @@ class TestCheckThursdayReminder:
 
         monkeypatch.setattr("cogs.pickem.asyncio.sleep", fake_sleep)
 
-        async def fetch_stub(target_weekday):
+        async def fetch_stub(target_weekday, now):
             assert target_weekday == 3
             # 20:15 Thursday in New York is 02:15 Friday in Oslo.
             return [{"date": "2024-09-06T00:15Z"}]
@@ -511,7 +566,7 @@ class TestCheckThursdayReminder:
 
         monkeypatch.setattr("cogs.pickem.asyncio.sleep", fake_sleep)
 
-        async def fetch_stub(target_weekday):
+        async def fetch_stub(target_weekday, now):
             assert target_weekday == 3
             # 20:15 in New York is 17:15 in Los Angeles, the same day.
             return [{"date": "2024-09-06T00:15Z"}]
@@ -551,7 +606,7 @@ class TestCheckSundayReminder:
 
         monkeypatch.setattr("cogs.pickem.asyncio.sleep", fake_sleep)
 
-        async def fetch_stub(target_weekday):
+        async def fetch_stub(target_weekday, now):
             assert target_weekday == 6
             # 2024-09-08 13:00 America/New_York == 2024-09-08 07:00
             # Pacific/Honolulu: natural reminder (kickoff minus 1h) = 06:00,
@@ -580,7 +635,7 @@ class TestCheckSundayReminder:
 
         monkeypatch.setattr("cogs.pickem.asyncio.sleep", fake_sleep)
 
-        async def fetch_stub(target_weekday):
+        async def fetch_stub(target_weekday, now):
             assert target_weekday == 6
             # Kickoff 2024-09-08 23:30 Europe/Oslo -> natural reminder
             # (kickoff minus 1h) = 22:30, itself inside quiet hours.
@@ -604,7 +659,7 @@ class TestCheckSundayReminder:
         channel = MagicMock()
         now = cog.league_tz.localize(datetime(2024, 9, 8, 12, 0))  # Sunday
 
-        async def failing_fetch(_target_weekday):
+        async def failing_fetch(_target_weekday, _now):
             return None  # how _fetch_events_for_nfl_weekday signals failure
 
         cog._fetch_events_for_nfl_weekday = failing_fetch
@@ -642,7 +697,8 @@ class TestCheckSundayReminder:
 
         monkeypatch.setattr("cogs.pickem.asyncio.sleep", fake_sleep)
 
-        result = await cog._fetch_events_for_nfl_weekday(6)
+        any_moment = cog.league_tz.localize(datetime(2024, 9, 7, 12, 0))
+        result = await cog._fetch_events_for_nfl_weekday(6, any_moment)
 
         assert result is None
         assert sleep_calls == [300]
@@ -653,7 +709,7 @@ class TestCheckSundayReminder:
         channel = MagicMock()
         now = cog.league_tz.localize(datetime(2024, 9, 8, 12, 0))
 
-        async def empty_fetch(_target_weekday):
+        async def empty_fetch(_target_weekday, _now):
             return []
 
         cog._fetch_events_for_nfl_weekday = empty_fetch
@@ -938,93 +994,38 @@ class TestFirstRun:
     """A fresh install mid-season must not get stuck trying
     to process a week it never posted."""
 
-    # Tuesday 2026-10-06, 21:00 Oslo: past the Tuesday 20:00 processing time.
-    TUESDAY_EVENING = pytz.timezone("Europe/Oslo").localize(
-        datetime(2026, 10, 6, 21, 0)
-    )
-
     @pytest.mark.asyncio
     async def test_empty_state_starts_from_the_current_week(self):
-        cog = make_cog(state_loaded=True, last_processed_week=None)
+        cog = make_cog(state_loaded=True, last_posted_week=None)
         cog._save_state = AsyncMock(return_value=True)
 
         await cog._start_from_current_week_if_first_run(5)
 
+        # Week 4 counts as posted and scored, so the next step posts week 5.
+        assert cog.last_posted_week == 4
         assert cog.last_processed_week == 4
         cog._save_state.assert_awaited_once()
 
-        assert not cog._should_process_previous_week(self.TUESDAY_EVENING, 5)
-
     @pytest.mark.asyncio
     async def test_first_run_in_week_one_uses_zero(self):
-        cog = make_cog(state_loaded=True, last_processed_week=None)
+        cog = make_cog(state_loaded=True, last_posted_week=None)
         cog._save_state = AsyncMock(return_value=True)
 
         await cog._start_from_current_week_if_first_run(1)
 
+        assert cog.last_posted_week == 0
         assert cog.last_processed_week == 0
 
     @pytest.mark.asyncio
     async def test_existing_state_is_left_alone(self):
-        cog = make_cog(state_loaded=True, last_processed_week=3)
+        cog = make_cog(state_loaded=True, last_posted_week=3, last_processed_week=3)
         cog._save_state = AsyncMock()
 
         await cog._start_from_current_week_if_first_run(5)
 
+        assert cog.last_posted_week == 3
         assert cog.last_processed_week == 3
         cog._save_state.assert_not_awaited()
-
-
-class TestSuperBowlProcessing:
-    """Nothing comes after the Super Bowl, so it can't wait
-    for a "next week" like every other week does."""
-
-    OSLO = pytz.timezone("Europe/Oslo")
-    # Super Bowl LX was Sunday 2026-02-08; Tuesday after, 21:00 Oslo.
-    TUESDAY_AFTER = OSLO.localize(datetime(2026, 2, 10, 21, 0))
-
-    @staticmethod
-    def super_bowl(completed: bool) -> list[dict]:
-        return [{"status": {"type": {"completed": completed}}}]
-
-    @pytest.mark.asyncio
-    async def test_ready_once_played_and_processing_time_has_come(self):
-        cog = make_cog(last_processed_week=22)
-        cog._fetch_week_events = AsyncMock(return_value=self.super_bowl(True))
-
-        assert await cog._super_bowl_needs_processing(self.TUESDAY_AFTER)
-        cog._fetch_week_events.assert_awaited_once_with(23)
-
-    @pytest.mark.asyncio
-    async def test_not_ready_before_the_game_is_over(self):
-        cog = make_cog(last_processed_week=22)
-        cog._fetch_week_events = AsyncMock(return_value=self.super_bowl(False))
-
-        assert not await cog._super_bowl_needs_processing(self.TUESDAY_AFTER)
-
-    @pytest.mark.asyncio
-    async def test_not_ready_before_tuesday_evening(self):
-        cog = make_cog(last_processed_week=22)
-        cog._fetch_week_events = AsyncMock(return_value=self.super_bowl(True))
-        monday = self.OSLO.localize(datetime(2026, 2, 9, 21, 0))
-
-        assert not await cog._super_bowl_needs_processing(monday)
-
-    @pytest.mark.asyncio
-    async def test_not_again_once_processed(self):
-        cog = make_cog(last_processed_week=23)
-        cog._fetch_week_events = AsyncMock(return_value=self.super_bowl(True))
-
-        assert not await cog._super_bowl_needs_processing(self.TUESDAY_AFTER)
-        cog._fetch_week_events.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_regular_season_weeks_never_trigger_it(self):
-        cog = make_cog(last_processed_week=5)
-        cog._fetch_week_events = AsyncMock()
-
-        assert not await cog._super_bowl_needs_processing(self.TUESDAY_AFTER)
-        cog._fetch_week_events.assert_not_awaited()
 
 
 class TestIsPickableGame:
@@ -1218,6 +1219,77 @@ async def test_scheduler_flushes_pending_state_before_guards(monkeypatch):
     assert flush_calls == [1]
 
 
+@pytest.mark.asyncio
+async def test_scheduler_survives_a_discord_error(monkeypatch):
+    """A failed Discord send must not end the weekly loop."""
+    cog = make_cog(state_loaded=True, last_processed_week=4, last_posted_week=4)
+    cog.bot.wait_until_ready = AsyncMock()
+    cog._season_window = MagicMock(return_value=(True, None, None))
+    cog._auto_post_round = AsyncMock(
+        side_effect=discord.HTTPException(MagicMock(), "Discord down")
+    )
+
+    async def stop_at_the_sleep(seconds):
+        raise SystemExit()  # reaching the sleep means the error was handled
+
+    monkeypatch.setattr("cogs.pickem.asyncio.sleep", stop_at_the_sleep)
+
+    with pytest.raises(SystemExit):
+        await cog.auto_post_scheduler()
+
+    cog._auto_post_round.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_survives_an_unexpected_error(monkeypatch):
+    """Anything unexpected (here a KeyError, as if ESPN changed its data
+    format) must not end the weekly loop, and the admin hears about it."""
+    cog = make_cog(state_loaded=True, last_processed_week=4, last_posted_week=4)
+    cog.bot.wait_until_ready = AsyncMock()
+    cog._season_window = MagicMock(return_value=(True, None, None))
+    # The first round fails, the second works.
+    cog._auto_post_round = AsyncMock(side_effect=[KeyError("competitions"), None])
+    cog._notify_admin = AsyncMock()
+    sleeps = 0
+
+    async def stop_at_the_second_sleep(seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 2:
+            raise SystemExit()  # the loop survived the error and ran again
+
+    monkeypatch.setattr("cogs.pickem.asyncio.sleep", stop_at_the_second_sleep)
+
+    with pytest.raises(SystemExit):
+        await cog.auto_post_scheduler()
+
+    assert cog._auto_post_round.await_count == 2
+    cog._notify_admin.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_in_season_sleeps_until_the_next_round(monkeypatch):
+    """In season, the loop sleeps only until the next round (Tuesday 18:00 at
+    the latest), not a fixed hour."""
+    cog = make_cog(state_loaded=True, last_processed_week=4, last_posted_week=4)
+    cog.bot.wait_until_ready = AsyncMock()
+    cog._season_window = MagicMock(return_value=(True, None, None))
+    cog._auto_post_round = AsyncMock()
+    cog._seconds_until_next_round = MagicMock(return_value=123)
+    slept = []
+
+    async def stop_at_the_sleep(seconds):
+        slept.append(seconds)
+        raise SystemExit()
+
+    monkeypatch.setattr("cogs.pickem.asyncio.sleep", stop_at_the_sleep)
+
+    with pytest.raises(SystemExit):
+        await cog.auto_post_scheduler()
+
+    assert slept == [123]
+
+
 # Pick lock
 
 OSLO = pytz.timezone("Europe/Oslo")
@@ -1340,11 +1412,8 @@ class TestPickLockRound:
         cog._lock_picks.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_no_lock_when_this_weeks_games_are_not_posted(self):
-        """The export takes the newest game messages. If this week's games were
-        never posted, those are last week's, and a lock would overwrite last
-        week's scored picks with late ones."""
-        cog = make_lock_cog(last_posted_week=4)
+    async def test_no_lock_before_anything_is_posted(self):
+        cog = make_lock_cog(last_posted_week=None)
 
         await cog._pick_lock_round(sunday_at(19, 0))
 
@@ -1424,7 +1493,7 @@ class TestPickLockRound:
 
         await cog._pick_lock_round(sunday_at(19, 0))
 
-        cog._get_nfl_current_week.assert_not_awaited()
+        cog._fetch_week_events.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_sleeps_through_the_off_season(self):
@@ -1432,7 +1501,7 @@ class TestPickLockRound:
 
         wait = await cog._pick_lock_round(OSLO.localize(datetime(2026, 6, 1, 12, 0)))
 
-        cog._get_nfl_current_week.assert_not_awaited()
+        cog._fetch_week_events.assert_not_awaited()
         assert wait > 24 * 3600
 
 
@@ -1454,6 +1523,24 @@ class TestLockPicks:
     async def test_failed_export_leaves_week_unlocked(self):
         cog = make_cog(last_exported_week=4)
         cog._export_impl = AsyncMock(side_effect=ExportError("Sheets down"))
+        cog._save_state = AsyncMock()
+        cog._notify_admin = AsyncMock()
+        channel = MagicMock(spec=discord.TextChannel)
+
+        locked = await cog._lock_picks(5, channel)
+
+        assert locked is False
+        assert cog.last_exported_week == 4
+        cog._notify_admin.assert_not_awaited()  # logged only; the round warns once
+
+    @pytest.mark.asyncio
+    async def test_google_login_failure_is_retried_quietly(self):
+        """Opening the sheet can fail before export starts (Google login, sheet
+        not found). That's a Google hiccup like any other: retried, not raised."""
+        cog = make_cog(last_exported_week=4)
+        cog._export_impl = AsyncMock(
+            side_effect=ClientAuthorizationError("Google unreachable")
+        )
         cog._save_state = AsyncMock()
         cog._notify_admin = AsyncMock()
         channel = MagicMock(spec=discord.TextChannel)
@@ -1497,3 +1584,278 @@ class TestTuesdayAfterLock:
         assert result is True
         cog._export_impl.assert_awaited_once()
         cog._results_impl.assert_awaited_once()
+
+
+# Tuesday processing
+
+TUESDAY = OSLO.localize(datetime(2026, 10, 6, 18, 30))  # after week 4's MNF
+
+
+class TestSecondsUntilNextRound:
+    """The scheduler must wake at exactly Tuesday 18:00, like the waiver reminder."""
+
+    @pytest.mark.parametrize(
+        "now, expected",
+        [
+            (datetime(2026, 10, 6, 17, 30), 30 * 60),  # Tue 17:30: wake at 18:00
+            (datetime(2026, 10, 6, 12, 0), 3600),  # Tue noon: normal hourly check
+            (datetime(2026, 10, 6, 18, 0, 30), 3600),  # just after: next week's is far
+            (datetime(2026, 10, 5, 23, 30), 3600),  # Monday night
+        ],
+    )
+    def test_wakes_at_tuesday_1800(self, now, expected):
+        cog = make_cog()
+
+        assert cog._seconds_until_next_round(OSLO.localize(now)) == expected
+
+    def test_never_less_than_a_second(self):
+        cog = make_cog()
+        almost = OSLO.localize(datetime(2026, 10, 6, 17, 59, 59, 999000))
+
+        assert cog._seconds_until_next_round(almost) == 1.0
+
+
+def game(date, completed=True):
+    return {"date": date, "status": {"type": {"completed": completed}}}
+
+
+WEEK_4 = [game("2026-10-04T17:00Z"), game("2026-10-06T00:15Z")]  # Sun + MNF
+
+
+class TestNextPickemWeek:
+    def test_regular_season(self):
+        assert next_pickem_week(5) == 6
+
+    def test_into_the_playoffs(self):
+        assert next_pickem_week(18) == 19
+
+    def test_skips_the_pro_bowl(self):
+        assert next_pickem_week(21) == 23
+
+    def test_new_season_after_the_super_bowl(self):
+        assert next_pickem_week(23) == 1
+
+
+class TestWeekIsOver:
+    @pytest.mark.asyncio
+    async def test_over_from_tuesday_evening_when_all_final(self):
+        cog = make_cog()
+        cog._fetch_week_events = AsyncMock(return_value=WEEK_4)
+
+        assert await cog._week_is_over(TUESDAY, 4)
+
+    @pytest.mark.asyncio
+    async def test_not_before_tuesday_evening(self):
+        cog = make_cog()
+        cog._fetch_week_events = AsyncMock(return_value=WEEK_4)
+
+        assert not await cog._week_is_over(
+            OSLO.localize(datetime(2026, 10, 6, 17, 0)), 4
+        )
+        assert not await cog._week_is_over(
+            OSLO.localize(datetime(2026, 10, 5, 21, 0)), 4
+        )
+        cog._fetch_week_events.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_not_while_a_game_is_unfinished(self):
+        cog = make_cog()
+        cog._fetch_week_events = AsyncMock(
+            return_value=[WEEK_4[0], game("2026-10-06T00:15Z", completed=False)]
+        )
+        cog._notify_admin = AsyncMock()
+
+        assert not await cog._week_is_over(TUESDAY, 4)
+        cog._notify_admin.assert_not_awaited()  # less than a day since kickoff
+
+    @pytest.mark.asyncio
+    async def test_keeps_waiting_until_60_hours_after_last_kickoff(self):
+        cog = make_cog()
+        cog._fetch_week_events = AsyncMock(
+            return_value=[WEEK_4[0], game("2026-10-06T00:15Z", completed=False)]
+        )
+        cog._notify_admin = AsyncMock()
+        # Last kickoff 00:15 UTC Tuesday + 60 h = 12:15 UTC Thursday = 14:15 Oslo.
+        just_before = OSLO.localize(datetime(2026, 10, 8, 14, 0))
+
+        assert not await cog._week_is_over(just_before, 4)
+        cog._notify_admin.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_scores_without_a_stuck_game_after_the_cutoff(self):
+        cog = make_cog()
+        cog._fetch_week_events = AsyncMock(
+            return_value=[WEEK_4[0], game("2026-10-06T00:15Z", completed=False)]
+        )
+        cog._notify_admin = AsyncMock()
+        after = OSLO.localize(datetime(2026, 10, 8, 14, 30))
+
+        assert await cog._week_is_over(after, 4)
+        assert await cog._week_is_over(after + timedelta(hours=1), 4)  # a retry
+        cog._notify_admin.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_week_without_games_counts_as_over(self):
+        """The Pro Bowl week: nothing to score."""
+        cog = make_cog()
+        cog._fetch_week_events = AsyncMock(side_effect=NoEventsFoundError(22))
+
+        assert await cog._week_is_over(TUESDAY, 22)
+
+
+def make_round_cog(**attrs):
+    """A cog with week 4 posted and not yet scored, and every step faked."""
+    cog = make_cog(state_loaded=True, last_posted_week=4, last_processed_week=3)
+    cog._week_is_over = AsyncMock(return_value=True)
+    cog._process_previous_week = AsyncMock(return_value=True)
+    cog._post_week = AsyncMock()
+    cog._get_nfl_current_week = AsyncMock(return_value=4)
+    cog._get_text_channel = MagicMock(return_value=MagicMock(spec=discord.TextChannel))
+    for key, value in attrs.items():
+        setattr(cog, key, value)
+    return cog
+
+
+class TestAutoPostRound:
+    @pytest.mark.asyncio
+    async def test_scores_the_posted_week_then_posts_the_next(self):
+        cog = make_round_cog()
+
+        await cog._auto_post_round(TUESDAY)
+
+        assert cog._process_previous_week.call_args.args[0] == 5  # scores week 4
+        cog._post_week.assert_awaited_once_with(5)
+        cog._get_nfl_current_week.assert_not_awaited()  # State, not ESPN's calendar
+
+    @pytest.mark.asyncio
+    async def test_waits_while_the_week_is_not_over(self):
+        cog = make_round_cog(_week_is_over=AsyncMock(return_value=False))
+
+        await cog._auto_post_round(TUESDAY)
+
+        cog._process_previous_week.assert_not_awaited()
+        cog._post_week.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failed_scoring_posts_nothing(self):
+        cog = make_round_cog(_process_previous_week=AsyncMock(return_value=False))
+
+        await cog._auto_post_round(TUESDAY)
+
+        cog._post_week.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_already_scored_week_posts_the_next(self):
+        """E.g. scoring worked but posting failed last round."""
+        cog = make_round_cog(last_processed_week=4)
+
+        await cog._auto_post_round(TUESDAY)
+
+        cog._week_is_over.assert_not_awaited()
+        cog._post_week.assert_awaited_once_with(5)
+
+    @pytest.mark.asyncio
+    async def test_after_the_super_bowl_waits_for_espn_week_one(self):
+        """In February, "next week" is week 1 of next season: not yet."""
+        cog = make_round_cog(
+            last_posted_week=23,
+            last_processed_week=23,
+            _get_nfl_current_week=AsyncMock(return_value=23),
+        )
+
+        await cog._auto_post_round(TUESDAY)
+
+        cog._post_week.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_new_season_posts_week_one(self):
+        cog = make_round_cog(
+            last_posted_week=23,
+            last_processed_week=23,
+            _get_nfl_current_week=AsyncMock(return_value=1),
+        )
+
+        await cog._auto_post_round(TUESDAY)
+
+        cog._post_week.assert_awaited_once_with(1)
+
+    @pytest.mark.asyncio
+    async def test_first_start_posts_espns_current_week(self):
+        cog = make_round_cog(
+            last_posted_week=None,
+            last_processed_week=None,
+            _get_nfl_current_week=AsyncMock(return_value=5),
+        )
+        cog._save_state = AsyncMock(return_value=True)
+
+        await cog._auto_post_round(TUESDAY)
+
+        cog._post_week.assert_awaited_once_with(5)
+
+
+class TestPostWeek:
+    @staticmethod
+    def make_post_cog(game_channel):
+        """A cog with week 4 posted, about to post week 5, with ESPN faked."""
+        reminder_channel = MagicMock(spec=discord.TextChannel)
+        reminder_channel.send = AsyncMock()
+        cog = make_cog(state_loaded=True, last_posted_week=4, last_processed_week=4)
+        cog._fetch_week_events = AsyncMock(return_value=[{"id": "1"}, {"id": "2"}])
+        cog._get_text_channel = MagicMock(
+            side_effect=lambda cid: (
+                game_channel if cid == GAME_CHANNEL_ID else reminder_channel
+            )
+        )
+        cog._events_posted_recently = AsyncMock(return_value=False)
+        cog._format_event = MagicMock(return_value="Patriots @ Giants")
+        cog._save_state = AsyncMock(return_value=True)
+        cog._notify_admin = AsyncMock()
+        return cog, reminder_channel
+
+    @pytest.mark.asyncio
+    async def test_posts_games_and_marks_the_week_posted(self):
+        game_channel = MagicMock(spec=discord.TextChannel)
+        game_channel.send = AsyncMock()
+        cog, reminder_channel = self.make_post_cog(game_channel)
+
+        await cog._post_week(5)
+
+        assert game_channel.send.await_count == 3  # 2 games + the instructions
+        reminder_channel.send.assert_awaited_once()
+        assert cog.last_posted_week == 5
+        cog._save_state.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_missing_game_channel_posts_nothing_and_retries(self):
+        """Without the game channel, the week must not be announced or marked as
+        posted, or it would never be retried. The admin is told once."""
+        cog, reminder_channel = self.make_post_cog(game_channel=None)
+
+        await cog._post_week(5)
+        await cog._post_week(5)  # the next round, still no channel
+
+        reminder_channel.send.assert_not_awaited()
+        assert cog.last_posted_week == 4
+        cog._save_state.assert_not_awaited()
+        cog._notify_admin.assert_awaited_once()
+
+
+class TestUpcomingNflDate:
+    """Reminders ask ESPN for the next Thursday or Sunday, by date."""
+
+    EASTERN = pytz.timezone("America/New_York")
+
+    def test_wednesday_gives_tomorrow(self):
+        wednesday = self.EASTERN.localize(datetime(2026, 9, 30, 2, 0))
+
+        assert upcoming_nfl_date(3, wednesday) == date(2026, 10, 1)
+
+    def test_on_the_day_itself_gives_today(self):
+        thursday = self.EASTERN.localize(datetime(2026, 10, 1, 19, 0))
+
+        assert upcoming_nfl_date(3, thursday) == date(2026, 10, 1)
+
+    def test_saturday_gives_sunday(self):
+        saturday = self.EASTERN.localize(datetime(2026, 10, 3, 2, 0))
+
+        assert upcoming_nfl_date(6, saturday) == date(2026, 10, 4)

@@ -491,5 +491,39 @@ async def test_broken_discord_ids_file_falls_back_and_tells_admin(
     cog._notify_admin.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_failed_alert_is_retried_next_round(mock_bot, mock_channel):
+    """If Discord fails to send an inactive-player alert, the player must not
+    count as notified: the next round tries again."""
+    import asyncio as real_asyncio
+
+    league = Mock(teams=[make_injured_team(1, "Aces")])
+    mock_channel.send.side_effect = [RuntimeError("Discord down"), None]
+    sleeps = 0
+
+    async def fake_sleep(seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 2:
+            raise _StopLoop
+
+    with patch.object(FantasyReminders, "reminder_scheduler", return_value=None):
+        cog = FantasyReminders(mock_bot)
+    cog._notify_admin = AsyncMock()
+    cog._player_kickoff = Mock(return_value=None)
+    with (
+        patch("cogs.fantasy_reminders.load_discord_ids", return_value={}),
+        patch("cogs.fantasy_reminders.get_text_channel", return_value=mock_channel),
+        patch("cogs.fantasy_reminders.get_league", return_value=league),
+        patch.object(real_asyncio, "sleep", fake_sleep),
+    ):
+        with pytest.raises(_StopLoop):
+            await cog.inactive_alert_scheduler()
+
+    sent = [c.args[0] for c in mock_channel.send.await_args_list]
+    assert len(sent) == 2  # the failed attempt, then the retry
+    assert "Injured Starter" in sent[1]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

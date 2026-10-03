@@ -57,6 +57,10 @@ Add your own `!commands` that reply with a fixed message, like links or inside j
 
 Each entry is `"command name": "reply"`, so the example above gives `!rules` and `!doink`. On Render, upload the file as a Secret File named `custom_commands.json`. The file is optional, and a broken one is logged and skipped rather than stopping the bot. Built-in command names (like `export`) can't be used.
 
+### Transactions
+
+Posts every add, drop, waiver claim and completed trade in the ESPN league to its own channel, within about a minute of it happening (trade proposals aren't posted). Optional: set `TRANSACTIONS_CHANNEL_ID` to switch it on. The bot remembers the last move it posted in a `Transactions` tab it creates in the pick'em spreadsheet, so a restart doesn't post anything twice.
+
 ### Other
 
 The bot sends a reminder every Tuesday not to forget waivers before the new week starts.
@@ -182,6 +186,7 @@ Settings are given to the bot as "environment variables": named values like `GAM
 | `PPR_MANAGERS` | Yes, for `!ppr` | One entry per manager, separated by `;`: the manager's tab name in the league sheet, optionally followed by `=` and the team name to show, e.g. `Alice=Aces;Bob=Bombers`. Update when managers join/leave or rename their team |
 | `PPR_HISTORY_SHEET_NAME` | No (default `PPR History`) | Name of the Sheets tab that stores PPR snapshot history |
 | `FANTASY_FINAL_WEEK` | No (default `17`) | Final week of the league's ESPN fantasy season (regular + playoff weeks); check your own league's ESPN settings |
+| `TRANSACTIONS_CHANNEL_ID` | No | Channel for league moves (adds, drops, waiver claims, trades). Leave it out to switch the feature off |
 
 **Bot-posted message text:** everything the bot says in Discord (reminders, confirmations, the weekly matchup digest, inactive-player alerts, and so on) is also configurable, each with a neutral English default. See `.env.example` for every variable name, its default, and any `{placeholder}` values a message fills in. No code changes are needed to run the bot in your own language or wording.
 
@@ -206,7 +211,7 @@ Besides the settings, the bot reads these files from its folder:
 5. **Secret Files** (in the same Environment page): upload `credentials.json`, and `discord_ids.json` / `custom_commands.json` if you made them. Use exactly those file names.
 6. **Deploy**, and watch the logs. After a minute or so you should see `Bot logged in as …`, and the bot comes online in Discord. Try `!ping`.
 
-On its first start the bot creates the `State` tab in your pick'em sheet, then posts this week's games in your game channel. From then on it runs on its own: games are posted each week, picks are locked at the first Sunday kickoff, and the week is scored automatically on Tuesday.
+On its first start the bot creates the `State` tab in your pick'em sheet, then posts this week's games in your game channel. From then on it runs on its own: games are posted each week, picks are locked at the first Sunday kickoff, and from Tuesday 18:00, once all the week's games are final, the week is scored and next week's games are posted.
 
 **About Render's free plan:** a free web service goes to sleep after a period without web traffic, and a sleeping bot is offline in Discord. The bot runs a small web page (`Bot is running!`) for exactly this reason: either use a paid instance, or point a free uptime-monitoring service at your Render URL so it's visited every few minutes. Check Render's current plans, as their free tier changes from time to time.
 
