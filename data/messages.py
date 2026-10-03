@@ -138,3 +138,18 @@ INACTIVE_FALLBACK_HEADER = _message(
     "INACTIVE_FALLBACK_HEADER",
     "@everyone Someone has inactive players in their active lineup:",
 )
+
+# Transactions (cogs/transactions.py)
+TRANSACTION_ADD_TEMPLATE = _message(
+    "TRANSACTION_ADD_TEMPLATE", "\u2795 {team} added {player}"
+)
+TRANSACTION_WAIVER_TEMPLATE = _message(
+    "TRANSACTION_WAIVER_TEMPLATE", "\u2795 {team} claimed {player} off waivers"
+)
+TRANSACTION_DROP_TEMPLATE = _message(
+    "TRANSACTION_DROP_TEMPLATE", "\u2796 {team} dropped {player}"
+)
+TRANSACTION_TRADE_HEADER = _message("TRANSACTION_TRADE_HEADER", "\U0001f501 Trade:")
+TRANSACTION_TRADE_LINE_TEMPLATE = _message(
+    "TRANSACTION_TRADE_LINE_TEMPLATE", "{team} receives {players}"
+)
