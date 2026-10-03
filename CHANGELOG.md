@@ -40,6 +40,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ### Fixed
 - A cog that failed to load at startup was only logged: the admin channel message was sent before the bot was connected, so it never arrived. Startup problems are now posted to the admin channel once the bot is online
 
+### Fixed
+- `!ppr` froze the whole bot while Google answered some of its spreadsheet calls. They now run in the background, and the list of tabs is fetched once instead of twice
+- A Google hiccup while the bot started disabled `!ppr` until the next restart. The league spreadsheet is now opened the first time `!ppr` needs it
+
 ## [1.0.0] - 25-09-2026
 
 The first public release. Before this, the bot ran privately for one league.
