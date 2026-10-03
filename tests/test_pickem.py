@@ -1,7 +1,7 @@
 """Tests for pickem.py."""
 
 from unittest.mock import AsyncMock, MagicMock
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import aiohttp
 import discord
 import pytest
@@ -17,6 +17,7 @@ from cogs.pickem import (
     is_pickable_game,
     pick_lock_time,
     next_pickem_week,
+    upcoming_nfl_date,
 )
 from core.utils.quiet_hours import clamp_to_quiet_hours
 from core.errors import (
@@ -373,7 +374,7 @@ class TestCheckThursdayReminder:
 
         monkeypatch.setattr("cogs.pickem.asyncio.sleep", fake_sleep)
 
-        async def fetch_stub(target_weekday):
+        async def fetch_stub(target_weekday, now):
             assert target_weekday == 3
             # 20:15 in New York is 17:15 in Los Angeles: reminder at 15:15 Thursday.
             return [{"date": "2024-09-06T00:15Z"}]
@@ -398,7 +399,7 @@ class TestCheckThursdayReminder:
             lambda s: sleep_calls.append(s),
         )
 
-        async def fetch_stub(_target_weekday):
+        async def fetch_stub(_target_weekday, _now):
             return [{"date": "2024-09-05T18:00Z"}]  # kickoff 20:00 Oslo
 
         cog._fetch_events_for_nfl_weekday = fetch_stub
@@ -414,7 +415,7 @@ class TestCheckThursdayReminder:
         channel = MagicMock()
         now = cog.league_tz.localize(datetime(2024, 9, 5, 12, 0))
 
-        async def empty_fetch(_target_weekday):
+        async def empty_fetch(_target_weekday, _now):
             return []
 
         cog._fetch_events_for_nfl_weekday = empty_fetch
@@ -455,16 +456,66 @@ class TestCheckThursdayReminder:
                 pass
 
             def get(self, url, *args, **kwargs):
+                urls.append(url)
                 return DummyResponse()
 
+        urls: list[str] = []
         monkeypatch.setattr(
             "cogs.pickem.aiohttp.ClientSession",
             lambda *a, **kw: DummySession(),
         )
+        monkeypatch.setattr(
+            "cogs.pickem.upcoming_nfl_date",
+            lambda target_weekday, now: date(2024, 9, 5),
+        )
 
-        result = await cog._fetch_events_for_nfl_weekday(3)
+        any_moment = cog.league_tz.localize(datetime(2024, 9, 5, 12, 0))
+        result = await cog._fetch_events_for_nfl_weekday(3, any_moment)
 
         assert result == [{"date": "2024-09-06T00:15Z"}]
+        # Asks for a date, not ESPN's current week (see upcoming_nfl_date).
+        assert urls[0].endswith("?dates=20240905")
+
+    @pytest.mark.asyncio
+    async def test_fetch_uses_the_leagues_date_west_of_eastern(self, monkeypatch):
+        """For a league west of US Eastern, Thursday evening local is already
+        Friday in New York. The fetch must still ask for this Thursday, not
+        next week's, or the bot sleeps past that week's Sunday reminder."""
+        cog = make_cog()
+
+        class DummyResponse:
+            async def json(self):
+                return {"events": []}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                pass
+
+        class DummySession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                pass
+
+            def get(self, url, *args, **kwargs):
+                urls.append(url)
+                return DummyResponse()
+
+        urls: list[str] = []
+        monkeypatch.setattr(
+            "cogs.pickem.aiohttp.ClientSession",
+            lambda *a, **kw: DummySession(),
+        )
+        # Thursday 21:30 in Los Angeles is Friday 00:30 in New York.
+        la = pytz.timezone("America/Los_Angeles")
+        now = la.localize(datetime(2026, 10, 1, 21, 30))
+
+        await cog._fetch_events_for_nfl_weekday(3, now)
+
+        assert urls[0].endswith("?dates=20261001")
 
     @pytest.mark.asyncio
     async def test_reminder_time_clamped_out_of_quiet_hours(self, monkeypatch):
@@ -484,7 +535,7 @@ class TestCheckThursdayReminder:
 
         monkeypatch.setattr("cogs.pickem.asyncio.sleep", fake_sleep)
 
-        async def fetch_stub(target_weekday):
+        async def fetch_stub(target_weekday, now):
             assert target_weekday == 3
             # 20:15 Thursday in New York is 02:15 Friday in Oslo.
             return [{"date": "2024-09-06T00:15Z"}]
@@ -515,7 +566,7 @@ class TestCheckThursdayReminder:
 
         monkeypatch.setattr("cogs.pickem.asyncio.sleep", fake_sleep)
 
-        async def fetch_stub(target_weekday):
+        async def fetch_stub(target_weekday, now):
             assert target_weekday == 3
             # 20:15 in New York is 17:15 in Los Angeles, the same day.
             return [{"date": "2024-09-06T00:15Z"}]
@@ -555,7 +606,7 @@ class TestCheckSundayReminder:
 
         monkeypatch.setattr("cogs.pickem.asyncio.sleep", fake_sleep)
 
-        async def fetch_stub(target_weekday):
+        async def fetch_stub(target_weekday, now):
             assert target_weekday == 6
             # 2024-09-08 13:00 America/New_York == 2024-09-08 07:00
             # Pacific/Honolulu: natural reminder (kickoff minus 1h) = 06:00,
@@ -584,7 +635,7 @@ class TestCheckSundayReminder:
 
         monkeypatch.setattr("cogs.pickem.asyncio.sleep", fake_sleep)
 
-        async def fetch_stub(target_weekday):
+        async def fetch_stub(target_weekday, now):
             assert target_weekday == 6
             # Kickoff 2024-09-08 23:30 Europe/Oslo -> natural reminder
             # (kickoff minus 1h) = 22:30, itself inside quiet hours.
@@ -608,7 +659,7 @@ class TestCheckSundayReminder:
         channel = MagicMock()
         now = cog.league_tz.localize(datetime(2024, 9, 8, 12, 0))  # Sunday
 
-        async def failing_fetch(_target_weekday):
+        async def failing_fetch(_target_weekday, _now):
             return None  # how _fetch_events_for_nfl_weekday signals failure
 
         cog._fetch_events_for_nfl_weekday = failing_fetch
@@ -646,7 +697,8 @@ class TestCheckSundayReminder:
 
         monkeypatch.setattr("cogs.pickem.asyncio.sleep", fake_sleep)
 
-        result = await cog._fetch_events_for_nfl_weekday(6)
+        any_moment = cog.league_tz.localize(datetime(2024, 9, 7, 12, 0))
+        result = await cog._fetch_events_for_nfl_weekday(6, any_moment)
 
         assert result is None
         assert sleep_calls == [300]
@@ -657,7 +709,7 @@ class TestCheckSundayReminder:
         channel = MagicMock()
         now = cog.league_tz.localize(datetime(2024, 9, 8, 12, 0))
 
-        async def empty_fetch(_target_weekday):
+        async def empty_fetch(_target_weekday, _now):
             return []
 
         cog._fetch_events_for_nfl_weekday = empty_fetch
@@ -1786,3 +1838,24 @@ class TestPostWeek:
         assert cog.last_posted_week == 4
         cog._save_state.assert_not_awaited()
         cog._notify_admin.assert_awaited_once()
+
+
+class TestUpcomingNflDate:
+    """Reminders ask ESPN for the next Thursday or Sunday, by date."""
+
+    EASTERN = pytz.timezone("America/New_York")
+
+    def test_wednesday_gives_tomorrow(self):
+        wednesday = self.EASTERN.localize(datetime(2026, 9, 30, 2, 0))
+
+        assert upcoming_nfl_date(3, wednesday) == date(2026, 10, 1)
+
+    def test_on_the_day_itself_gives_today(self):
+        thursday = self.EASTERN.localize(datetime(2026, 10, 1, 19, 0))
+
+        assert upcoming_nfl_date(3, thursday) == date(2026, 10, 1)
+
+    def test_saturday_gives_sunday(self):
+        saturday = self.EASTERN.localize(datetime(2026, 10, 3, 2, 0))
+
+        assert upcoming_nfl_date(6, saturday) == date(2026, 10, 4)
