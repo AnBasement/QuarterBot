@@ -1105,17 +1105,39 @@ class Pickem(commands.Cog):
 
         # Already posted, e.g. before a restart?
         try:
-            already = await self._events_posted_recently(events, game_channel)
+            posted = await self._already_posted(events, game_channel)
         except discord.HTTPException as exc:
             logger.warning("Failed to check history: %s", exc)
-            already = False
-        if already:
+            posted = set()
+        missing = [
+            ev
+            for ev in events
+            if self._format_event(ev, game_channel.guild) not in posted
+        ]
+        if not missing and PICK_INSTRUCTIONS_MESSAGE.strip() not in posted:
+            # All games went out, but the instructions didn't: send the rest.
+            await self._send_instructions_and_notice(week, game_channel)
+
+        if not missing:
             logger.info("Week %s already posted; updating state only.", week)
             self.last_posted_week = week
             await self._save_state()
             return
+        if posted:
+            # Discord failed partway through an earlier attempt: finish the week.
+            logger.warning(
+                "Week %s was half-posted (%d of %d games); posting the rest.",
+                week,
+                len(events) - len(missing),
+                len(events),
+            )
+            await self._notify_admin(
+                f"[pickem] Week {week} was half-posted "
+                f"({len(events) - len(missing)} of {len(events)} games); "
+                f"posted the remaining {len(missing)}."
+            )
 
-        await self._send_week(week, events, game_channel)
+        await self._send_week(week, missing, game_channel)
 
         self.last_posted_week = week
         await self._save_state()
@@ -1133,11 +1155,18 @@ class Pickem(commands.Cog):
         """Sends a week's game to `channel`followed by pick instructipns and a "games
         are posted" notice in the reminder channel."""
         logger.info("Posting %d events for week %s to Discord", len(events), week)
-        reminder_channel = self._get_text_channel(REMINDER_CHANNEL_ID)
 
         for ev in events:
             await channel.send(self._format_event(ev, channel.guild))
+        await self._send_instructions_and_notice(week, channel)
+
+    async def _send_instructions_and_notice(
+        self, week: int, channel: discord.TextChannel
+    ) -> None:
+        """Sends the pick instructions, and the "games are posted" notice in
+        the reminder channel."""
         await channel.send(PICK_INSTRUCTIONS_MESSAGE)
+        reminder_channel = self._get_text_channel(REMINDER_CHANNEL_ID)
         if reminder_channel is not None:
             await reminder_channel.send(
                 WEEKLY_GAMES_POSTED_MESSAGE.format(week=week, channel=GAME_CHANNEL_ID)
@@ -1266,21 +1295,23 @@ class Pickem(commands.Cog):
             f"{home_team} {get_team_emoji_by_name(guild, home_team)}"
         )
 
-    async def _events_posted_recently(
+    async def _already_posted(
         self, events: list[dict[str, Any]], channel: discord.TextChannel
-    ) -> bool:
-        """Whether this week's games were already posted in the last 14 days.
-
-        Also True if only some were found, to be safe against double posting.
-        """
+    ) -> set[str]:
+        """Which of this week's games are already in the channel (posted by the
+        bot in the last 14 days). Also includes the pick instructions, if they
+        were posted after this week's games."""
         if not events:
-            return False
+            return set()
         two_weeks_ago = datetime.now(self.league_tz) - timedelta(
             days=MESSAGE_HISTORY_LOOKBACK_DAYS
         )
         needed = {self._format_event(ev, channel.guild) for ev in events}
+        instructions = PICK_INSTRUCTIONS_MESSAGE.strip()
         found: set[str] = set()
+        seen_a_game = False
 
+        # With after=, Discord gives the messages oldest first.
         async for msg in channel.history(
             limit=EVENT_HISTORY_CHECK_LIMIT, after=two_weeks_ago
         ):
@@ -1289,22 +1320,13 @@ class Pickem(commands.Cog):
             content = msg.content.strip()
             if content in needed:
                 found.add(content)
-            if needed == found:
-                logger.info(
-                    "All games for current week already posted. Skipping posting."
-                )
-                return True
+                seen_a_game = True
+            elif content == instructions and seen_a_game:
+                # Only instructions posted after this week's games count: the
+                # text is the same every week.
+                found.add(instructions)
 
-        if found:
-            logger.warning(
-                "Found %d of %d games posted. This indicates possible duplicates. "
-                "Skipping posting just in case.",
-                len(found),
-                len(needed),
-            )
-            return True
-
-        return False
+        return found
 
     @commands.command(name="export", aliases=["eksporter"])
     @admin_only()

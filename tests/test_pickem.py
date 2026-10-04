@@ -29,7 +29,11 @@ from core.errors import (
 )
 from data.channel_ids import GAME_CHANNEL_ID
 from data.teams import teams, get_team_emoji_by_name
-from data.messages import THURSDAY_GAME_REMINDER_MESSAGE, SUNDAY_GAME_REMINDER_MESSAGE
+from data.messages import (
+    THURSDAY_GAME_REMINDER_MESSAGE,
+    SUNDAY_GAME_REMINDER_MESSAGE,
+    PICK_INSTRUCTIONS_MESSAGE,
+)
 
 
 def make_cog(**attrs):
@@ -1806,7 +1810,7 @@ class TestPostWeek:
                 game_channel if cid == GAME_CHANNEL_ID else reminder_channel
             )
         )
-        cog._events_posted_recently = AsyncMock(return_value=False)
+        cog._already_posted = AsyncMock(return_value=set())
         cog._format_event = MagicMock(return_value="Patriots @ Giants")
         cog._save_state = AsyncMock(return_value=True)
         cog._notify_admin = AsyncMock()
@@ -1838,6 +1842,111 @@ class TestPostWeek:
         assert cog.last_posted_week == 4
         cog._save_state.assert_not_awaited()
         cog._notify_admin.assert_awaited_once()
+
+    @staticmethod
+    def with_named_games(cog):
+        """Gives each fake game its own message text ("game 1", "game 2"), so a
+        test can say which ones are already in the channel."""
+        cog._format_event = MagicMock(side_effect=lambda ev, guild: f"game {ev['id']}")
+        cog._send_week = AsyncMock()
+        cog._send_instructions_and_notice = AsyncMock()
+        return cog
+
+    @pytest.mark.asyncio
+    async def test_half_posted_week_posts_only_the_missing_games(self):
+        game_channel = MagicMock(spec=discord.TextChannel)
+        cog, _ = self.make_post_cog(game_channel)
+        self.with_named_games(cog)
+        cog._already_posted = AsyncMock(return_value={"game 1"})
+
+        await cog._post_week(5)
+
+        week, games, channel = cog._send_week.await_args.args
+        assert [ev["id"] for ev in games] == ["2"]  # only the missing one
+        cog._notify_admin.assert_awaited_once()
+        assert cog.last_posted_week == 5
+
+    @pytest.mark.asyncio
+    async def test_full_week_already_posted_only_updates_state(self):
+        game_channel = MagicMock(spec=discord.TextChannel)
+        cog, _ = self.make_post_cog(game_channel)
+        self.with_named_games(cog)
+        cog._already_posted = AsyncMock(
+            return_value={"game 1", "game 2", PICK_INSTRUCTIONS_MESSAGE.strip()}
+        )
+
+        await cog._post_week(5)
+
+        cog._send_week.assert_not_awaited()
+        cog._send_instructions_and_notice.assert_not_awaited()
+        assert cog.last_posted_week == 5
+
+    @pytest.mark.asyncio
+    async def test_games_posted_but_instructions_missing_sends_them(self):
+        game_channel = MagicMock(spec=discord.TextChannel)
+        cog, _ = self.make_post_cog(game_channel)
+        self.with_named_games(cog)
+        cog._already_posted = AsyncMock(return_value={"game 1", "game 2"})
+
+        await cog._post_week(5)
+
+        cog._send_week.assert_not_awaited()
+        cog._send_instructions_and_notice.assert_awaited_once()
+        assert cog.last_posted_week == 5
+
+    @pytest.mark.asyncio
+    async def test_unreadable_history_posts_everything(self):
+        game_channel = MagicMock(spec=discord.TextChannel)
+        cog, _ = self.make_post_cog(game_channel)
+        self.with_named_games(cog)
+        cog._already_posted = AsyncMock(
+            side_effect=discord.HTTPException(MagicMock(), "no history")
+        )
+
+        await cog._post_week(5)
+
+        week, games, channel = cog._send_week.await_args.args
+        assert len(games) == 2
+
+
+class TestAlreadyPosted:
+    @staticmethod
+    def make_channel(cog, texts):
+        """A fake channel whose history is the given texts, oldest first, all
+        posted by the bot."""
+        messages = [MagicMock(author=cog.bot.user, content=text) for text in texts]
+
+        async def history(*args, **kwargs):
+            for msg in messages:
+                yield msg
+
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.history = history
+        return channel
+
+    @pytest.mark.asyncio
+    async def test_instructions_after_this_weeks_games_count(self):
+        cog = make_cog()
+        cog._format_event = MagicMock(side_effect=lambda ev, guild: f"game {ev['id']}")
+        instructions = PICK_INSTRUCTIONS_MESSAGE.strip()
+        channel = self.make_channel(cog, ["game 1", "game 2", instructions])
+
+        found = await cog._already_posted([{"id": "1"}, {"id": "2"}], channel)
+
+        assert found == {"game 1", "game 2", instructions}
+
+    @pytest.mark.asyncio
+    async def test_last_weeks_instructions_dont_count(self):
+        """The instructions text is the same every week: only instructions
+        posted after this week's games count."""
+        cog = make_cog()
+        cog._format_event = MagicMock(side_effect=lambda ev, guild: f"game {ev['id']}")
+        instructions = PICK_INSTRUCTIONS_MESSAGE.strip()
+        channel = self.make_channel(cog, [instructions, "game 1", "game 2"])
+
+        found = await cog._already_posted([{"id": "1"}, {"id": "2"}], channel)
+
+        assert found == {"game 1", "game 2"}
 
 
 class TestUpcomingNflDate:
