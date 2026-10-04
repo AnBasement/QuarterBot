@@ -1102,7 +1102,6 @@ class Pickem(commands.Cog):
                     f"week {week}'s games weren't posted. Retrying every hour."
                 )
             return
-        reminder_channel = self._get_text_channel(REMINDER_CHANNEL_ID)
 
         # Already posted, e.g. before a restart?
         try:
@@ -1116,14 +1115,7 @@ class Pickem(commands.Cog):
             await self._save_state()
             return
 
-        logger.info("Posting %d events for week %s to Discord", len(events), week)
-        for ev in events:
-            await game_channel.send(self._format_event(ev, game_channel.guild))
-        await game_channel.send(PICK_INSTRUCTIONS_MESSAGE)
-        if reminder_channel is not None:
-            await reminder_channel.send(
-                WEEKLY_GAMES_POSTED_MESSAGE.format(week=week, channel=GAME_CHANNEL_ID)
-            )
+        await self._send_week(week, events, game_channel)
 
         self.last_posted_week = week
         await self._save_state()
@@ -1134,6 +1126,22 @@ class Pickem(commands.Cog):
             self.last_processed_week,
             self.last_posted_week,
         )
+
+    async def _send_week(
+        self, week: int, events: list[dict[str, Any]], channel: discord.TextChannel
+    ) -> None:
+        """Sends a week's game to `channel`followed by pick instructipns and a "games
+        are posted" notice in the reminder channel."""
+        logger.info("Posting %d events for week %s to Discord", len(events), week)
+        reminder_channel = self._get_text_channel(REMINDER_CHANNEL_ID)
+
+        for ev in events:
+            await channel.send(self._format_event(ev, channel.guild))
+        await channel.send(PICK_INSTRUCTIONS_MESSAGE)
+        if reminder_channel is not None:
+            await reminder_channel.send(
+                WEEKLY_GAMES_POSTED_MESSAGE.format(week=week, channel=GAME_CHANNEL_ID)
+            )
 
     async def _auto_post_round(self, now: datetime) -> None:
         """One round: score the posted week once it's over, then post the next."""
