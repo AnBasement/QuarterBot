@@ -217,13 +217,14 @@ Besides the settings, the bot reads these files from its folder:
     - Runtime: **Python 3**
     - Build command: `pip install -r requirements.txt`
     - Start command: `python -m core.bot`
+    - Health Check Path (under **Advanced**): `/`. Render then restarts the bot if it loses its connection to Discord
 4. **Environment:** add every setting from step 5, plus `PYTHON_VERSION=3.12` (otherwise Render picks its own Python version). If you've collected them in a `.env`-style text file, Render's **Add from .env** option lets you paste them all at once.
 5. **Secret Files** (in the same Environment page): upload `credentials.json`, and `discord_ids.json` / `custom_commands.json` if you made them. Use exactly those file names.
 6. **Deploy**, and watch the logs. After a minute or so you should see `Bot logged in as …`, and the bot comes online in Discord. Try `!ping`.
 
 On its first start the bot creates the `State` tab in your pick'em sheet, then posts this week's games in your game channel. From then on it runs on its own: games are posted each week, picks are locked at the first Sunday kickoff, and from Tuesday 18:00, once all the week's games are final, the week is scored and next week's games are posted.
 
-**About Render's free plan:** a free web service goes to sleep after a period without web traffic, and a sleeping bot is offline in Discord. The bot runs a small web page (`Bot is running!`) for exactly this reason: either use a paid instance, or point a free uptime-monitoring service at your Render URL so it's visited every few minutes. Check Render's current plans, as their free tier changes from time to time.
+**About Render's free plan:** a free web service goes to sleep after a period without web traffic, and a sleeping bot is offline in Discord. The bot runs a small web page (it says `Bot is running!` while connected to Discord, and returns an error otherwise) for exactly this reason: either use a paid instance, or point a free uptime-monitoring service at your Render URL so it's visited every few minutes. Check Render's current plans, as their free tier changes from time to time.
 
 **Running it on your own computer instead** (useful for testing): install Python 3.12, then
 
