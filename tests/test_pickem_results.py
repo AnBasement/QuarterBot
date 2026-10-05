@@ -249,7 +249,7 @@ async def test_bots_own_reaction_is_not_a_pick(monkeypatch):
     monkeypatch.setattr("cogs.pickem.get_sheet", lambda name: sheet)
 
     away, home = "New England Patriots", "Buffalo Bills"
-    bot_user = MagicMock()
+    bot_user = MagicMock(id=222)
     alice = MagicMock(id=111)
 
     async def bot_only():
