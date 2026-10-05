@@ -6,6 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 
 ## [Unreleased]
 
+## [1.1.0] - 05-10-2026
+
 ### Added
 - Picks lock automatically at the first Sunday kickoff (the first game of the week in the playoffs). They're exported to the sheet then, so later picks (reactions) don't count. This means that Thursday and Saturday games are on the honor system. A failed lock is retried for an hour, and the admin channel is told once if it still hasn't worked after 10 minutes. If it never works, picks are exported on Tuesday as before
 - The `State` tab gets a third column, `last_exported_week`, added automatically to existing tabs
