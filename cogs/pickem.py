@@ -55,7 +55,6 @@ from data.config import (
     DRAW_SHEET_LABEL,
 )
 from data.messages import (
-    GAMES_POSTED_MESSAGE,
     WEEKLY_GAMES_POSTED_MESSAGE,
     THURSDAY_GAME_REMINDER_MESSAGE,
     SUNDAY_GAME_REMINDER_MESSAGE,
@@ -351,20 +350,14 @@ class Pickem(commands.Cog):
         await self._games_impl(ctx, week)
 
     async def _games_impl(self, ctx: commands.Context, week: int | None = None) -> None:
-        events = await self._fetch_week_events(week)
-        for ev in events:
-            comps = ev["competitions"][0]["competitors"]
-            home = next(c for c in comps if c["homeAway"] == "home")
-            away = next(c for c in comps if c["homeAway"] == "away")
-            home_team = home["team"]["displayName"]
-            away_team = away["team"]["displayName"]
-            away_emoji = get_team_emoji_by_name(ctx.guild, away_team)
-            home_emoji = get_team_emoji_by_name(ctx.guild, home_team)
-            await ctx.send(f"{away_emoji} {away_team} @ {home_team} {home_emoji}")
+        """Posts the week's games like the automated post, without touching State."""
+        if week is None:
+            week = await self._get_nfl_current_week()
 
-        channel = ctx.bot.get_channel(REMINDER_CHANNEL_ID)
-        if channel:
-            await channel.send(GAMES_POSTED_MESSAGE.format(channel=GAME_CHANNEL_ID))
+        events = await self._fetch_week_events(week)
+        if not isinstance(ctx.channel, discord.TextChannel):
+            return
+        await self._send_week(week, events, ctx.channel)
 
     async def _fetch_week_events(self, week: int | None) -> list[dict[str, Any]]:
         """A week's pickable NFL games from ESPN (current week if None), by kickoff.

@@ -1949,6 +1949,46 @@ class TestAlreadyPosted:
         assert found == {"game 1", "game 2"}
 
 
+class TestGamesCommand:
+    @staticmethod
+    def make_games_cog():
+        cog = make_cog(last_posted_week=4)
+        cog._fetch_week_events = AsyncMock(return_value=[{"id": "1"}])
+        cog._send_week = AsyncMock()
+        cog._save_state = AsyncMock()
+        cog._get_nfl_current_week = AsyncMock(return_value=6)
+        ctx = MagicMock()
+        ctx.channel = MagicMock(spec=discord.TextChannel)
+        return cog, ctx
+
+    @pytest.mark.asyncio
+    async def test_posts_the_week_in_the_commands_channel(self):
+        cog, ctx = self.make_games_cog()
+
+        await cog._games_impl(ctx, 5)
+
+        cog._send_week.assert_awaited_once_with(5, [{"id": "1"}], ctx.channel)
+
+    @pytest.mark.asyncio
+    async def test_does_not_touch_state(self):
+        """Posting by hand must not change which week the weekly routine thinks
+        is posted: that's for the automatic post only."""
+        cog, ctx = self.make_games_cog()
+
+        await cog._games_impl(ctx, 5)
+
+        assert cog.last_posted_week == 4
+        cog._save_state.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_without_week_uses_the_current_week(self):
+        cog, ctx = self.make_games_cog()
+
+        await cog._games_impl(ctx, None)
+
+        cog._fetch_week_events.assert_awaited_once_with(6)
+
+
 class TestUpcomingNflDate:
     """Reminders ask ESPN for the next Thursday or Sunday, by date."""
 
