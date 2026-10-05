@@ -33,6 +33,7 @@ from data.messages import (
     THURSDAY_GAME_REMINDER_MESSAGE,
     SUNDAY_GAME_REMINDER_MESSAGE,
     PICK_INSTRUCTIONS_MESSAGE,
+    WEEKLY_GAMES_POSTED_MESSAGE,
 )
 
 
@@ -1801,6 +1802,8 @@ class TestPostWeek:
     @staticmethod
     def make_post_cog(game_channel):
         """A cog with week 4 posted, about to post week 5, with ESPN faked."""
+        if game_channel is not None:
+            game_channel.id = GAME_CHANNEL_ID  # the real game channel
         reminder_channel = MagicMock(spec=discord.TextChannel)
         reminder_channel.send = AsyncMock()
         cog = make_cog(state_loaded=True, last_posted_week=4, last_processed_week=4)
@@ -2058,6 +2061,42 @@ class TestSendWeek:
         assert channel.send.await_count == 2  # each game once
         assert message.add_reaction.await_count == 1
         cog._send_instructions_and_notice.assert_awaited_once()
+
+    @staticmethod
+    def make_notice_cog():
+        cog = make_cog()
+        reminder_channel = MagicMock(spec=discord.TextChannel)
+        reminder_channel.send = AsyncMock()
+        cog._get_text_channel = MagicMock(return_value=reminder_channel)
+        return cog, reminder_channel
+
+    @pytest.mark.asyncio
+    async def test_notice_when_the_games_went_to_the_game_channel(self):
+        cog, reminder_channel = self.make_notice_cog()
+        game_channel = MagicMock(spec=discord.TextChannel)
+        game_channel.id = GAME_CHANNEL_ID
+        game_channel.send = AsyncMock()
+
+        await cog._send_instructions_and_notice(5, game_channel)
+
+        game_channel.send.assert_awaited_once_with(PICK_INSTRUCTIONS_MESSAGE)
+        reminder_channel.send.assert_awaited_once_with(
+            WEEKLY_GAMES_POSTED_MESSAGE.format(week=5, channel=GAME_CHANNEL_ID)
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_notice_when_posted_in_another_channel(self):
+        """!games tested in e.g. an admin channel: the games and instructions go
+        there, but the league isn't pinged about games it can't see."""
+        cog, reminder_channel = self.make_notice_cog()
+        other_channel = MagicMock(spec=discord.TextChannel)
+        other_channel.id = 999
+        other_channel.send = AsyncMock()
+
+        await cog._send_instructions_and_notice(5, other_channel)
+
+        other_channel.send.assert_awaited_once_with(PICK_INSTRUCTIONS_MESSAGE)
+        reminder_channel.send.assert_not_awaited()
 
 
 class TestUpcomingNflDate:

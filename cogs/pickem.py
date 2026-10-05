@@ -1172,9 +1172,11 @@ class Pickem(commands.Cog):
     async def _send_instructions_and_notice(
         self, week: int, channel: discord.TextChannel
     ) -> None:
-        """Sends the pick instructions, and the "games are posted" notice in
-        the reminder channel."""
+        """Sends the pick instructions, and, if the games went to the game channel,
+        the "games are posted" notice in the reminder channel."""
         await channel.send(PICK_INSTRUCTIONS_MESSAGE)
+        if channel.id != GAME_CHANNEL_ID:
+            return
         reminder_channel = self._get_text_channel(REMINDER_CHANNEL_ID)
         if reminder_channel is not None:
             await reminder_channel.send(
