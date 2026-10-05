@@ -6,10 +6,9 @@ from typing import Any
 
 from discord.ext import commands
 from espn_api.football import League
-from gspread.exceptions import WorksheetNotFound
 from gspread.worksheet import Worksheet
 
-from cogs.sheets import get_sheet
+from cogs.sheets import get_or_create_tab
 from core.utils.discord_helpers import get_text_channel
 from core.utils.espn_helpers import get_league
 from data.channel_ids import ADMIN_CHANNEL_ID, TRANSACTIONS_CHANNEL_ID
@@ -118,17 +117,9 @@ class Transactions(commands.Cog):
 
     async def _state_tab(self) -> Worksheet:
         """The Transactions tab of the pick'em spreadsheet, created if missing."""
-        base_sheet = await asyncio.to_thread(get_sheet, PICKEM_SHEET_NAME)
-        spreadsheet = base_sheet.spreadsheet
-        try:
-            return await asyncio.to_thread(spreadsheet.worksheet, STATE_TAB)
-        except WorksheetNotFound:
-            logger.info("Creating the %s tab.", STATE_TAB)
-            tab = await asyncio.to_thread(
-                spreadsheet.add_worksheet, title=STATE_TAB, rows=2, cols=1
-            )
-            await asyncio.to_thread(tab.update, [["last_posted_date"]], "A1")
-            return tab
+        return await asyncio.to_thread(
+            get_or_create_tab, PICKEM_SHEET_NAME, STATE_TAB, ["last_posted_date"]
+        )
 
     async def _load_last_date(self) -> int | None:
         """The saved date of the newest posted move, or None if there's none yet."""
