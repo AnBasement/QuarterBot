@@ -1145,12 +1145,28 @@ class Pickem(commands.Cog):
     async def _send_week(
         self, week: int, events: list[dict[str, Any]], channel: discord.TextChannel
     ) -> None:
-        """Sends a week's game to `channel`followed by pick instructipns and a "games
+        """Sends a week's games to `channel` followed by pick instructions and a "games
         are posted" notice in the reminder channel."""
         logger.info("Posting %d events for week %s to Discord", len(events), week)
 
+        reactions_ok = True
         for ev in events:
-            await channel.send(self._format_event(ev, channel.guild))
+            msg = await channel.send(self._format_event(ev, channel.guild))
+            if not reactions_ok:
+                continue
+            away_team, home_team = self._event_teams(ev)
+            for team in (away_team, home_team):
+                emoji = get_team_emoji_by_name(channel.guild, team)
+                if not emoji:
+                    continue  # unknown team: no emoji to react with
+                try:
+                    await msg.add_reaction(emoji)
+                except discord.HTTPException as exc:
+                    # E.g. if bot doesn't have Add Reactions permission. Reactions are a
+                    # convenience: post the rest of the week without them.
+                    logger.warning("Couldn't add game reactions: %s", exc)
+                    reactions_ok = False
+                    break
         await self._send_instructions_and_notice(week, channel)
 
     async def _send_instructions_and_notice(

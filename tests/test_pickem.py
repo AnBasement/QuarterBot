@@ -1811,6 +1811,8 @@ class TestPostWeek:
             )
         )
         cog._already_posted = AsyncMock(return_value=set())
+        # Made-up teams: no emoji, so _send_week adds no reactions.
+        cog._event_teams = MagicMock(return_value=("Away", "Home"))
         cog._format_event = MagicMock(return_value="Patriots @ Giants")
         cog._save_state = AsyncMock(return_value=True)
         cog._notify_admin = AsyncMock()
@@ -1987,6 +1989,75 @@ class TestGamesCommand:
         await cog._games_impl(ctx, None)
 
         cog._fetch_week_events.assert_awaited_once_with(6)
+
+
+class TestSendWeek:
+    @staticmethod
+    def make_send_cog():
+        cog = make_cog()
+        cog._send_instructions_and_notice = AsyncMock()
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.guild = None  # no server emoji: the Unicode fallbacks are used
+        message = MagicMock()
+        message.add_reaction = AsyncMock()
+        channel.send = AsyncMock(return_value=message)
+        return cog, channel, message
+
+    @staticmethod
+    def game(away, home):
+        return {
+            "competitions": [
+                {
+                    "competitors": [
+                        {"homeAway": "home", "team": {"displayName": home}},
+                        {"homeAway": "away", "team": {"displayName": away}},
+                    ]
+                }
+            ]
+        }
+
+    @pytest.mark.asyncio
+    async def test_reacts_with_both_team_emoji_away_first(self):
+        cog, channel, message = self.make_send_cog()
+
+        await cog._send_week(
+            5, [self.game("New England Patriots", "New York Giants")], channel
+        )
+
+        reacted = [call.args[0] for call in message.add_reaction.await_args_list]
+        assert reacted == [
+            get_team_emoji_by_name(None, "New England Patriots"),
+            get_team_emoji_by_name(None, "New York Giants"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_unknown_team_gets_no_reaction(self):
+        """A team the bot doesn't know has no emoji: only the known team gets
+        a reaction."""
+        cog, channel, message = self.make_send_cog()
+
+        await cog._send_week(5, [self.game("Oslo Vikings", "New York Giants")], channel)
+
+        assert message.add_reaction.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_failed_reaction_still_posts_the_week(self):
+        """Without the Add Reactions permission, the games and the instructions
+        still go out, and the bot stops trying after the first failure."""
+        cog, channel, message = self.make_send_cog()
+        message.add_reaction = AsyncMock(
+            side_effect=discord.Forbidden(MagicMock(), "no permission")
+        )
+        games = [
+            self.game("New England Patriots", "New York Giants"),
+            self.game("Buffalo Bills", "New York Jets"),
+        ]
+
+        await cog._send_week(5, games, channel)
+
+        assert channel.send.await_count == 2  # each game once
+        assert message.add_reaction.await_count == 1
+        cog._send_instructions_and_notice.assert_awaited_once()
 
 
 class TestUpcomingNflDate:
