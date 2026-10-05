@@ -10,6 +10,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 - Picks lock automatically at the first Sunday kickoff (the first game of the week in the playoffs): they're exported to the sheet then, so later reactions don't count. Thursday and Saturday games are on the honor system. A failed lock is retried for an hour, and the admin channel is told once if it still hasn't worked after 10 minutes. If it never works, picks are exported on Tuesday as before
 - The `State` tab gets a third column, `last_exported_week`, added automatically to existing tabs
 - A transactions channel: every add, drop, waiver claim and completed trade in the ESPN league is posted within about a minute. Switch it on with `TRANSACTIONS_CHANNEL_ID`; the message text is configurable like the rest (`TRANSACTION_*` in `.env.example`)
+- The bot automatically reacts to each pick'em game with each team's emoji, so making a pick requires just one click/tap
 
 ### Changed
 - The Sunday reminder's default text says that picks lock at kickoff
@@ -20,6 +21,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 - Weeks are scored from Tuesday 18:00, as soon as ESPN has marked every game final, and the next week's games are posted right after. Before, both waited until ESPN switched weeks on Wednesday morning. The week waits for delayed games
 - The Super Bowl week's games are posted right after the conference championships, since the Pro Bowl week in between has nothing to pick
 - A game still not final 60 hours after the week's last kickoff (postponed or canceled) no longer holds the week up: the week is scored without it, and the admin channel is told
+- `!games` now posts the pick instructions and the same notice as the automated weekly job, with the week number
 
 ### Fixed
 - An unplayed game (postponed or canceled) was scored as a 0-0 tie. It's now void: nobody gets points for it
@@ -35,6 +37,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 - A cog that failed to load at startup was only logged: the admin channel message was sent before the bot was connected, so it never arrived. Startup problems are now posted to the admin channel once the bot is online
 - `!ppr` froze the whole bot while Google answered some of its spreadsheet calls. They now run in the background, and the list of tabs is fetched once instead of twice
 - A Google hiccup while the bot started disabled `!ppr` until the next restart. The league spreadsheet is now opened the first time `!ppr` needs it
+- If Discord failed partway through posting a week's games (or before the pick instructions), the rest was never posted. The next attempt now posts what's missing
+
+### Removed
+- `GAMES_POSTED_MESSAGE` has been removed, as `!games` now uses `WEEKLY_GAMES_POSTED_MESSAGE`
 
 ## [1.0.0] - 25-09-2026
 
