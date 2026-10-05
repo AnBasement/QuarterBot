@@ -1275,13 +1275,19 @@ class Pickem(commands.Cog):
                 self._seconds_until_next_round(datetime.now(self.league_tz))
             )
 
-    def _format_event(self, ev: dict[str, Any], guild: discord.Guild | None) -> str:
-        """Formats an ESPN game as "emoji Away @ Home emoji" for the given server."""
+    def _event_teams(self, ev: dict[str, Any]) -> tuple[str, str]:
+        """An ESPN game's (away team, home team) display names."""
         comps = ev["competitions"][0]["competitors"]
         home = next(c for c in comps if c["homeAway"] == "home")
         away = next(c for c in comps if c["homeAway"] == "away")
         home_team = home["team"]["displayName"]
         away_team = away["team"]["displayName"]
+
+        return away_team, home_team
+
+    def _format_event(self, ev: dict[str, Any], guild: discord.Guild | None) -> str:
+        """Formats an ESPN game as "emoji Away @ Home emoji" for the given server."""
+        away_team, home_team = self._event_teams(ev)
 
         return (
             f"{get_team_emoji_by_name(guild, away_team)} {away_team} @ "
