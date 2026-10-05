@@ -4,6 +4,7 @@ import asyncio
 import aiohttp
 from aiohttp import ClientTimeout
 from core.errors import APIFetchError
+from datetime import datetime
 import logging
 from typing import Any
 
@@ -37,3 +38,8 @@ async def fetch_json(url: str) -> dict[str, Any]:
         raise APIFetchError(url, e) from e
 
     return data
+
+
+def parse_espn_date(datestr: str) -> datetime:
+    """Parses an ESPN date like "2025-09-21T18:00Z" into an aware UTC datetime."""
+    return datetime.fromisoformat(datestr.replace("Z", "+00:00"))
