@@ -55,7 +55,6 @@ from data.config import (
     DRAW_SHEET_LABEL,
 )
 from data.messages import (
-    GAMES_POSTED_MESSAGE,
     WEEKLY_GAMES_POSTED_MESSAGE,
     THURSDAY_GAME_REMINDER_MESSAGE,
     SUNDAY_GAME_REMINDER_MESSAGE,
@@ -351,20 +350,14 @@ class Pickem(commands.Cog):
         await self._games_impl(ctx, week)
 
     async def _games_impl(self, ctx: commands.Context, week: int | None = None) -> None:
-        events = await self._fetch_week_events(week)
-        for ev in events:
-            comps = ev["competitions"][0]["competitors"]
-            home = next(c for c in comps if c["homeAway"] == "home")
-            away = next(c for c in comps if c["homeAway"] == "away")
-            home_team = home["team"]["displayName"]
-            away_team = away["team"]["displayName"]
-            away_emoji = get_team_emoji_by_name(ctx.guild, away_team)
-            home_emoji = get_team_emoji_by_name(ctx.guild, home_team)
-            await ctx.send(f"{away_emoji} {away_team} @ {home_team} {home_emoji}")
+        """Posts the week's games like the automated post, without touching State."""
+        if week is None:
+            week = await self._get_nfl_current_week()
 
-        channel = ctx.bot.get_channel(REMINDER_CHANNEL_ID)
-        if channel:
-            await channel.send(GAMES_POSTED_MESSAGE.format(channel=GAME_CHANNEL_ID))
+        events = await self._fetch_week_events(week)
+        if not isinstance(ctx.channel, discord.TextChannel):
+            return
+        await self._send_week(week, events, ctx.channel)
 
     async def _fetch_week_events(self, week: int | None) -> list[dict[str, Any]]:
         """A week's pickable NFL games from ESPN (current week if None), by kickoff.
@@ -1102,28 +1095,42 @@ class Pickem(commands.Cog):
                     f"week {week}'s games weren't posted. Retrying every hour."
                 )
             return
-        reminder_channel = self._get_text_channel(REMINDER_CHANNEL_ID)
 
         # Already posted, e.g. before a restart?
         try:
-            already = await self._events_posted_recently(events, game_channel)
+            posted = await self._already_posted(events, game_channel)
         except discord.HTTPException as exc:
             logger.warning("Failed to check history: %s", exc)
-            already = False
-        if already:
+            posted = set()
+        missing = [
+            ev
+            for ev in events
+            if self._format_event(ev, game_channel.guild) not in posted
+        ]
+        if not missing and PICK_INSTRUCTIONS_MESSAGE.strip() not in posted:
+            # All games went out, but the instructions didn't: send the rest.
+            await self._send_instructions_and_notice(week, game_channel)
+
+        if not missing:
             logger.info("Week %s already posted; updating state only.", week)
             self.last_posted_week = week
             await self._save_state()
             return
-
-        logger.info("Posting %d events for week %s to Discord", len(events), week)
-        for ev in events:
-            await game_channel.send(self._format_event(ev, game_channel.guild))
-        await game_channel.send(PICK_INSTRUCTIONS_MESSAGE)
-        if reminder_channel is not None:
-            await reminder_channel.send(
-                WEEKLY_GAMES_POSTED_MESSAGE.format(week=week, channel=GAME_CHANNEL_ID)
+        if posted:
+            # Discord failed partway through an earlier attempt: finish the week.
+            logger.warning(
+                "Week %s was half-posted (%d of %d games); posting the rest.",
+                week,
+                len(events) - len(missing),
+                len(events),
             )
+            await self._notify_admin(
+                f"[pickem] Week {week} was half-posted "
+                f"({len(events) - len(missing)} of {len(events)} games); "
+                f"posted the remaining {len(missing)}."
+            )
+
+        await self._send_week(week, missing, game_channel)
 
         self.last_posted_week = week
         await self._save_state()
@@ -1134,6 +1141,47 @@ class Pickem(commands.Cog):
             self.last_processed_week,
             self.last_posted_week,
         )
+
+    async def _send_week(
+        self, week: int, events: list[dict[str, Any]], channel: discord.TextChannel
+    ) -> None:
+        """Sends a week's games to `channel` followed by pick instructions and a "games
+        are posted" notice in the reminder channel."""
+        logger.info("Posting %d events for week %s to Discord", len(events), week)
+
+        reactions_ok = True
+        for ev in events:
+            msg = await channel.send(self._format_event(ev, channel.guild))
+            if not reactions_ok:
+                continue
+            away_team, home_team = self._event_teams(ev)
+            for team in (away_team, home_team):
+                emoji = get_team_emoji_by_name(channel.guild, team)
+                if not emoji:
+                    continue  # unknown team: no emoji to react with
+                try:
+                    await msg.add_reaction(emoji)
+                except discord.HTTPException as exc:
+                    # E.g. if bot doesn't have Add Reactions permission. Reactions are a
+                    # convenience: post the rest of the week without them.
+                    logger.warning("Couldn't add game reactions: %s", exc)
+                    reactions_ok = False
+                    break
+        await self._send_instructions_and_notice(week, channel)
+
+    async def _send_instructions_and_notice(
+        self, week: int, channel: discord.TextChannel
+    ) -> None:
+        """Sends the pick instructions, and, if the games went to the game channel,
+        the "games are posted" notice in the reminder channel."""
+        await channel.send(PICK_INSTRUCTIONS_MESSAGE)
+        if channel.id != GAME_CHANNEL_ID:
+            return
+        reminder_channel = self._get_text_channel(REMINDER_CHANNEL_ID)
+        if reminder_channel is not None:
+            await reminder_channel.send(
+                WEEKLY_GAMES_POSTED_MESSAGE.format(week=week, channel=GAME_CHANNEL_ID)
+            )
 
     async def _auto_post_round(self, now: datetime) -> None:
         """One round: score the posted week once it's over, then post the next."""
@@ -1245,34 +1293,42 @@ class Pickem(commands.Cog):
                 self._seconds_until_next_round(datetime.now(self.league_tz))
             )
 
-    def _format_event(self, ev: dict[str, Any], guild: discord.Guild | None) -> str:
-        """Formats an ESPN game as "emoji Away @ Home emoji" for the given server."""
+    def _event_teams(self, ev: dict[str, Any]) -> tuple[str, str]:
+        """An ESPN game's (away team, home team) display names."""
         comps = ev["competitions"][0]["competitors"]
         home = next(c for c in comps if c["homeAway"] == "home")
         away = next(c for c in comps if c["homeAway"] == "away")
         home_team = home["team"]["displayName"]
         away_team = away["team"]["displayName"]
 
+        return away_team, home_team
+
+    def _format_event(self, ev: dict[str, Any], guild: discord.Guild | None) -> str:
+        """Formats an ESPN game as "emoji Away @ Home emoji" for the given server."""
+        away_team, home_team = self._event_teams(ev)
+
         return (
             f"{get_team_emoji_by_name(guild, away_team)} {away_team} @ "
             f"{home_team} {get_team_emoji_by_name(guild, home_team)}"
         )
 
-    async def _events_posted_recently(
+    async def _already_posted(
         self, events: list[dict[str, Any]], channel: discord.TextChannel
-    ) -> bool:
-        """Whether this week's games were already posted in the last 14 days.
-
-        Also True if only some were found, to be safe against double posting.
-        """
+    ) -> set[str]:
+        """Which of this week's games are already in the channel (posted by the
+        bot in the last 14 days). Also includes the pick instructions, if they
+        were posted after this week's games."""
         if not events:
-            return False
+            return set()
         two_weeks_ago = datetime.now(self.league_tz) - timedelta(
             days=MESSAGE_HISTORY_LOOKBACK_DAYS
         )
         needed = {self._format_event(ev, channel.guild) for ev in events}
+        instructions = PICK_INSTRUCTIONS_MESSAGE.strip()
         found: set[str] = set()
+        seen_a_game = False
 
+        # With after=, Discord gives the messages oldest first.
         async for msg in channel.history(
             limit=EVENT_HISTORY_CHECK_LIMIT, after=two_weeks_ago
         ):
@@ -1281,22 +1337,13 @@ class Pickem(commands.Cog):
             content = msg.content.strip()
             if content in needed:
                 found.add(content)
-            if needed == found:
-                logger.info(
-                    "All games for current week already posted. Skipping posting."
-                )
-                return True
+                seen_a_game = True
+            elif content == instructions and seen_a_game:
+                # Only instructions posted after this week's games count: the
+                # text is the same every week.
+                found.add(instructions)
 
-        if found:
-            logger.warning(
-                "Found %d of %d games posted. This indicates possible duplicates. "
-                "Skipping posting just in case.",
-                len(found),
-                len(needed),
-            )
-            return True
-
-        return False
+        return found
 
     @commands.command(name="export", aliases=["eksporter"])
     @admin_only()

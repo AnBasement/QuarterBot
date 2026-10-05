@@ -29,7 +29,12 @@ from core.errors import (
 )
 from data.channel_ids import GAME_CHANNEL_ID
 from data.teams import teams, get_team_emoji_by_name
-from data.messages import THURSDAY_GAME_REMINDER_MESSAGE, SUNDAY_GAME_REMINDER_MESSAGE
+from data.messages import (
+    THURSDAY_GAME_REMINDER_MESSAGE,
+    SUNDAY_GAME_REMINDER_MESSAGE,
+    PICK_INSTRUCTIONS_MESSAGE,
+    WEEKLY_GAMES_POSTED_MESSAGE,
+)
 
 
 def make_cog(**attrs):
@@ -1797,6 +1802,8 @@ class TestPostWeek:
     @staticmethod
     def make_post_cog(game_channel):
         """A cog with week 4 posted, about to post week 5, with ESPN faked."""
+        if game_channel is not None:
+            game_channel.id = GAME_CHANNEL_ID  # the real game channel
         reminder_channel = MagicMock(spec=discord.TextChannel)
         reminder_channel.send = AsyncMock()
         cog = make_cog(state_loaded=True, last_posted_week=4, last_processed_week=4)
@@ -1806,7 +1813,9 @@ class TestPostWeek:
                 game_channel if cid == GAME_CHANNEL_ID else reminder_channel
             )
         )
-        cog._events_posted_recently = AsyncMock(return_value=False)
+        cog._already_posted = AsyncMock(return_value=set())
+        # Made-up teams: no emoji, so _send_week adds no reactions.
+        cog._event_teams = MagicMock(return_value=("Away", "Home"))
         cog._format_event = MagicMock(return_value="Patriots @ Giants")
         cog._save_state = AsyncMock(return_value=True)
         cog._notify_admin = AsyncMock()
@@ -1838,6 +1847,256 @@ class TestPostWeek:
         assert cog.last_posted_week == 4
         cog._save_state.assert_not_awaited()
         cog._notify_admin.assert_awaited_once()
+
+    @staticmethod
+    def with_named_games(cog):
+        """Gives each fake game its own message text ("game 1", "game 2"), so a
+        test can say which ones are already in the channel."""
+        cog._format_event = MagicMock(side_effect=lambda ev, guild: f"game {ev['id']}")
+        cog._send_week = AsyncMock()
+        cog._send_instructions_and_notice = AsyncMock()
+        return cog
+
+    @pytest.mark.asyncio
+    async def test_half_posted_week_posts_only_the_missing_games(self):
+        game_channel = MagicMock(spec=discord.TextChannel)
+        cog, _ = self.make_post_cog(game_channel)
+        self.with_named_games(cog)
+        cog._already_posted = AsyncMock(return_value={"game 1"})
+
+        await cog._post_week(5)
+
+        week, games, channel = cog._send_week.await_args.args
+        assert [ev["id"] for ev in games] == ["2"]  # only the missing one
+        cog._notify_admin.assert_awaited_once()
+        assert cog.last_posted_week == 5
+
+    @pytest.mark.asyncio
+    async def test_full_week_already_posted_only_updates_state(self):
+        game_channel = MagicMock(spec=discord.TextChannel)
+        cog, _ = self.make_post_cog(game_channel)
+        self.with_named_games(cog)
+        cog._already_posted = AsyncMock(
+            return_value={"game 1", "game 2", PICK_INSTRUCTIONS_MESSAGE.strip()}
+        )
+
+        await cog._post_week(5)
+
+        cog._send_week.assert_not_awaited()
+        cog._send_instructions_and_notice.assert_not_awaited()
+        assert cog.last_posted_week == 5
+
+    @pytest.mark.asyncio
+    async def test_games_posted_but_instructions_missing_sends_them(self):
+        game_channel = MagicMock(spec=discord.TextChannel)
+        cog, _ = self.make_post_cog(game_channel)
+        self.with_named_games(cog)
+        cog._already_posted = AsyncMock(return_value={"game 1", "game 2"})
+
+        await cog._post_week(5)
+
+        cog._send_week.assert_not_awaited()
+        cog._send_instructions_and_notice.assert_awaited_once()
+        assert cog.last_posted_week == 5
+
+    @pytest.mark.asyncio
+    async def test_unreadable_history_posts_everything(self):
+        game_channel = MagicMock(spec=discord.TextChannel)
+        cog, _ = self.make_post_cog(game_channel)
+        self.with_named_games(cog)
+        cog._already_posted = AsyncMock(
+            side_effect=discord.HTTPException(MagicMock(), "no history")
+        )
+
+        await cog._post_week(5)
+
+        week, games, channel = cog._send_week.await_args.args
+        assert len(games) == 2
+
+
+class TestAlreadyPosted:
+    @staticmethod
+    def make_channel(cog, texts):
+        """A fake channel whose history is the given texts, oldest first, all
+        posted by the bot."""
+        messages = [MagicMock(author=cog.bot.user, content=text) for text in texts]
+
+        async def history(*args, **kwargs):
+            for msg in messages:
+                yield msg
+
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.history = history
+        return channel
+
+    @pytest.mark.asyncio
+    async def test_instructions_after_this_weeks_games_count(self):
+        cog = make_cog()
+        cog._format_event = MagicMock(side_effect=lambda ev, guild: f"game {ev['id']}")
+        instructions = PICK_INSTRUCTIONS_MESSAGE.strip()
+        channel = self.make_channel(cog, ["game 1", "game 2", instructions])
+
+        found = await cog._already_posted([{"id": "1"}, {"id": "2"}], channel)
+
+        assert found == {"game 1", "game 2", instructions}
+
+    @pytest.mark.asyncio
+    async def test_last_weeks_instructions_dont_count(self):
+        """The instructions text is the same every week: only instructions
+        posted after this week's games count."""
+        cog = make_cog()
+        cog._format_event = MagicMock(side_effect=lambda ev, guild: f"game {ev['id']}")
+        instructions = PICK_INSTRUCTIONS_MESSAGE.strip()
+        channel = self.make_channel(cog, [instructions, "game 1", "game 2"])
+
+        found = await cog._already_posted([{"id": "1"}, {"id": "2"}], channel)
+
+        assert found == {"game 1", "game 2"}
+
+
+class TestGamesCommand:
+    @staticmethod
+    def make_games_cog():
+        cog = make_cog(last_posted_week=4)
+        cog._fetch_week_events = AsyncMock(return_value=[{"id": "1"}])
+        cog._send_week = AsyncMock()
+        cog._save_state = AsyncMock()
+        cog._get_nfl_current_week = AsyncMock(return_value=6)
+        ctx = MagicMock()
+        ctx.channel = MagicMock(spec=discord.TextChannel)
+        return cog, ctx
+
+    @pytest.mark.asyncio
+    async def test_posts_the_week_in_the_commands_channel(self):
+        cog, ctx = self.make_games_cog()
+
+        await cog._games_impl(ctx, 5)
+
+        cog._send_week.assert_awaited_once_with(5, [{"id": "1"}], ctx.channel)
+
+    @pytest.mark.asyncio
+    async def test_does_not_touch_state(self):
+        """Posting by hand must not change which week the weekly routine thinks
+        is posted: that's for the automatic post only."""
+        cog, ctx = self.make_games_cog()
+
+        await cog._games_impl(ctx, 5)
+
+        assert cog.last_posted_week == 4
+        cog._save_state.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_without_week_uses_the_current_week(self):
+        cog, ctx = self.make_games_cog()
+
+        await cog._games_impl(ctx, None)
+
+        cog._fetch_week_events.assert_awaited_once_with(6)
+
+
+class TestSendWeek:
+    @staticmethod
+    def make_send_cog():
+        cog = make_cog()
+        cog._send_instructions_and_notice = AsyncMock()
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.guild = None  # no server emoji: the Unicode fallbacks are used
+        message = MagicMock()
+        message.add_reaction = AsyncMock()
+        channel.send = AsyncMock(return_value=message)
+        return cog, channel, message
+
+    @staticmethod
+    def game(away, home):
+        return {
+            "competitions": [
+                {
+                    "competitors": [
+                        {"homeAway": "home", "team": {"displayName": home}},
+                        {"homeAway": "away", "team": {"displayName": away}},
+                    ]
+                }
+            ]
+        }
+
+    @pytest.mark.asyncio
+    async def test_reacts_with_both_team_emoji_away_first(self):
+        cog, channel, message = self.make_send_cog()
+
+        await cog._send_week(
+            5, [self.game("New England Patriots", "New York Giants")], channel
+        )
+
+        reacted = [call.args[0] for call in message.add_reaction.await_args_list]
+        assert reacted == [
+            get_team_emoji_by_name(None, "New England Patriots"),
+            get_team_emoji_by_name(None, "New York Giants"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_unknown_team_gets_no_reaction(self):
+        """A team the bot doesn't know has no emoji: only the known team gets
+        a reaction."""
+        cog, channel, message = self.make_send_cog()
+
+        await cog._send_week(5, [self.game("Oslo Vikings", "New York Giants")], channel)
+
+        assert message.add_reaction.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_failed_reaction_still_posts_the_week(self):
+        """Without the Add Reactions permission, the games and the instructions
+        still go out, and the bot stops trying after the first failure."""
+        cog, channel, message = self.make_send_cog()
+        message.add_reaction = AsyncMock(
+            side_effect=discord.Forbidden(MagicMock(), "no permission")
+        )
+        games = [
+            self.game("New England Patriots", "New York Giants"),
+            self.game("Buffalo Bills", "New York Jets"),
+        ]
+
+        await cog._send_week(5, games, channel)
+
+        assert channel.send.await_count == 2  # each game once
+        assert message.add_reaction.await_count == 1
+        cog._send_instructions_and_notice.assert_awaited_once()
+
+    @staticmethod
+    def make_notice_cog():
+        cog = make_cog()
+        reminder_channel = MagicMock(spec=discord.TextChannel)
+        reminder_channel.send = AsyncMock()
+        cog._get_text_channel = MagicMock(return_value=reminder_channel)
+        return cog, reminder_channel
+
+    @pytest.mark.asyncio
+    async def test_notice_when_the_games_went_to_the_game_channel(self):
+        cog, reminder_channel = self.make_notice_cog()
+        game_channel = MagicMock(spec=discord.TextChannel)
+        game_channel.id = GAME_CHANNEL_ID
+        game_channel.send = AsyncMock()
+
+        await cog._send_instructions_and_notice(5, game_channel)
+
+        game_channel.send.assert_awaited_once_with(PICK_INSTRUCTIONS_MESSAGE)
+        reminder_channel.send.assert_awaited_once_with(
+            WEEKLY_GAMES_POSTED_MESSAGE.format(week=5, channel=GAME_CHANNEL_ID)
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_notice_when_posted_in_another_channel(self):
+        """!games tested in e.g. an admin channel: the games and instructions go
+        there, but the league isn't pinged about games it can't see."""
+        cog, reminder_channel = self.make_notice_cog()
+        other_channel = MagicMock(spec=discord.TextChannel)
+        other_channel.id = 999
+        other_channel.send = AsyncMock()
+
+        await cog._send_instructions_and_notice(5, other_channel)
+
+        other_channel.send.assert_awaited_once_with(PICK_INSTRUCTIONS_MESSAGE)
+        reminder_channel.send.assert_not_awaited()
 
 
 class TestUpcomingNflDate:

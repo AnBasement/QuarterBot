@@ -17,7 +17,7 @@ def test_settings_from_dotenv_file_are_seen_by_data_modules(tmp_path):
     in this one."""
     (tmp_path / ".env").write_text(
         "REMINDER_CHANNEL_ID=1\nGAME_CHANNEL_ID=2\nADMIN_CHANNEL_ID=3\n"
-        "GAMES_POSTED_MESSAGE=from-dotenv\n"
+        "WEEKLY_GAMES_POSTED_MESSAGE=from-dotenv\n"
     )
     env = {
         k: v
@@ -27,7 +27,7 @@ def test_settings_from_dotenv_file_are_seen_by_data_modules(tmp_path):
             "REMINDER_CHANNEL_ID",
             "GAME_CHANNEL_ID",
             "ADMIN_CHANNEL_ID",
-            "GAMES_POSTED_MESSAGE",
+            "WEEKLY_GAMES_POSTED_MESSAGE",
         }
     }
     env["PYTHONPATH"] = str(REPO_ROOT)
@@ -36,7 +36,7 @@ def test_settings_from_dotenv_file_are_seen_by_data_modules(tmp_path):
         [
             sys.executable,
             "-c",
-            "import core.bot; from data.messages import GAMES_POSTED_MESSAGE as m; print(m)",
+            "import core.bot; from data.messages import WEEKLY_GAMES_POSTED_MESSAGE as m; print(m)",
         ],
         cwd=tmp_path,
         env=env,

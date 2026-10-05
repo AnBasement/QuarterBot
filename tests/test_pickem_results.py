@@ -241,6 +241,50 @@ async def test_export_parses_messages_with_unicode_fallback_emoji(monkeypatch):
     assert ["Patriots@Bills", "Bills", ""] in sheet.grid
 
 
+@pytest.mark.asyncio
+async def test_bots_own_reaction_is_not_a_pick(monkeypatch):
+    """The bot reacts to every game with both teams' emoji. Its own reaction
+    must never count as a pick: only Alice's does, and Bob has no pick."""
+    sheet = FakeSheet(HEADER_ROWS)
+    monkeypatch.setattr("cogs.pickem.get_sheet", lambda name: sheet)
+
+    away, home = "New England Patriots", "Buffalo Bills"
+    bot_user = MagicMock(id=222)
+    alice = MagicMock(id=111)
+
+    async def bot_only():
+        yield bot_user
+
+    async def alice_only():
+        yield alice
+
+    bots_reaction = MagicMock(emoji=get_team_emoji_by_name(None, away))
+    bots_reaction.users = bot_only
+    alices_pick = MagicMock(emoji=get_team_emoji_by_name(None, home))
+    alices_pick.users = alice_only
+    game_msg = MagicMock(
+        content=(
+            f"{get_team_emoji_by_name(None, away)} {away} @ "
+            f"{home} {get_team_emoji_by_name(None, home)}"
+        ),
+        author=bot_user,
+        created_at=datetime.now(pytz.timezone("Europe/Oslo")),
+        reactions=[bots_reaction, alices_pick],
+    )
+
+    async def history(*args, **kwargs):
+        yield game_msg
+
+    cog = make_cog()
+    cog.bot.user = bot_user
+    ctx = make_ctx()
+    ctx.channel.history = history
+
+    await cog._export_impl(ctx)
+
+    assert ["Patriots@Bills", "Bills", ""] in sheet.grid
+
+
 def two_week_sheet() -> FakeSheet:
     """Week 1 fully scored, week 2 exported but not yet scored. Week 1 has
     the same "Patriots@Giants" game code as week 2 (a rematch)."""

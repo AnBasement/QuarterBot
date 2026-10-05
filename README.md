@@ -24,6 +24,7 @@ The feature's display name is configurable via `GAME_NAME` (default `Weekly Pick
 - Fetches results from ESPN's API and color-codes the Sheets tab based on whether a participant guessed correctly
 - Tracks participants' picks and scores weekly and across the season
 - Posts weekly and season results to a dedicated Discord channel
+- Bot automatically reacts to each game with each team's emoji, so participating players only need a single click to make their pick.
 
 **Team logos:** the bot works out of the box with a built-in set of generic Unicode emoji for all 32 NFL teams plus a tie/draw, no setup needed, and Discord reactions require a real emoji either way. If your server has uploaded its own custom team emoji, the bot automatically prefers those instead, matched by name. To use your own logos, upload custom emoji to your server (Server Settings → Emoji) named exactly:
 

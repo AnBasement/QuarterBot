@@ -21,10 +21,6 @@ COMMAND_USAGE_MESSAGE = _message(
 )
 
 # Pick'em game (cogs/pickem.py)
-GAMES_POSTED_MESSAGE = _message(
-    "GAMES_POSTED_MESSAGE",
-    "@everyone This week's games are posted in <#{channel}>!",
-)
 WEEKLY_GAMES_POSTED_MESSAGE = _message(
     "WEEKLY_GAMES_POSTED_MESSAGE",
     "@everyone This week's games (week {week}) are posted in <#{channel}>!",
