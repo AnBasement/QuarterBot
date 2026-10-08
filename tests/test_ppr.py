@@ -395,3 +395,102 @@ async def test_espn_problems_become_ppr_fetch_errors(monkeypatch):
 
     with pytest.raises(PPRFetchError):
         await cog._seasons()
+
+
+# The history tab
+
+
+class FakeTab:
+    """An in-memory tab that really stores rows, like a header-only new tab."""
+
+    def __init__(self, rows=None):
+        self.rows = (
+            rows if rows is not None else [["season", "owner", "team", "ppr", "rank"]]
+        )
+        self.read_with: dict = {}
+
+    def append_rows(self, rows):
+        self.rows.extend(rows)
+
+    def get_all_values(self, **kwargs):
+        self.read_with = kwargs
+        return [list(row) for row in self.rows]
+
+
+def cog_with_history(rows=None):
+    tab = FakeTab(rows)
+    cog = PPR(MagicMock())
+    cog._history_tab = AsyncMock(return_value=tab)
+    return cog, tab
+
+
+def ranked_row(owner, team_name, ppr):
+    return {"owner": owner, "team": team_name, "ppr": ppr}
+
+
+@pytest.mark.asyncio
+async def test_save_history_appends_one_row_per_manager_with_rank():
+    cog, tab = cog_with_history()
+
+    await cog._save_history(
+        2026, [ranked_row("{A}", "Aces", 1.15432), ranked_row("{B}", "Bombers", 0.9)]
+    )
+
+    assert tab.rows[1:] == [
+        [2026, "{A}", "Aces", 1.154, 1],
+        [2026, "{B}", "Bombers", 0.9, 2],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_last_history_is_the_latest_run_of_the_season():
+    cog, _ = cog_with_history()
+    await cog._save_history(2026, [ranked_row("{A}", "Aces", 1.0)])
+    await cog._save_history(
+        2026, [ranked_row("{B}", "Bombers", 1.2), ranked_row("{A}", "Aces", 1.1)]
+    )
+
+    last = await cog._last_history(2026)
+
+    assert last == {"{A}": (1.1, 2), "{B}": (1.2, 1)}
+
+
+@pytest.mark.asyncio
+async def test_last_history_ignores_other_seasons():
+    """A new season starts without arrows."""
+    cog, _ = cog_with_history()
+    await cog._save_history(2025, [ranked_row("{A}", "Aces", 1.3)])
+
+    assert await cog._last_history(2026) == {}
+
+
+@pytest.mark.asyncio
+async def test_last_history_skips_broken_rows():
+    """Someone may edit the tab by hand: a bad row is skipped, not a crash."""
+    cog, _ = cog_with_history(
+        [
+            ["season", "owner", "team", "ppr", "rank"],
+            [2026, "{A}", "Aces", "not a number", 1],
+            [2026, "{B}"],
+            [2026, "{C}", "Comets", 0.95, 3],
+        ]
+    )
+
+    assert await cog._last_history(2026) == {"{C}": (0.95, 3)}
+
+
+@pytest.mark.asyncio
+async def test_last_history_is_empty_for_a_new_tab():
+    cog, _ = cog_with_history()
+
+    assert await cog._last_history(2026) == {}
+
+
+@pytest.mark.asyncio
+async def test_last_history_asks_for_plain_numbers():
+    """A spreadsheet set to Norwegian would otherwise return 1.134 as "1,134"."""
+    cog, tab = cog_with_history()
+
+    await cog._last_history(2026)
+
+    assert tab.read_with.get("value_render_option") == "UNFORMATTED_VALUE"

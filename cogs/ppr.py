@@ -8,11 +8,12 @@ from typing import Any, Dict, List
 import discord
 import gspread
 import gspread.exceptions
-from gspread.utils import rowcol_to_a1
+from gspread.utils import rowcol_to_a1, ValueRenderOption
+from gspread.worksheet import Worksheet
 import requests
 from discord.ext import commands
 from core.errors import PPRFetchError, PPRSnapshotError
-from cogs.sheets import get_client
+from cogs.sheets import get_client, get_or_create_tab
 from core.decorators import admin_only
 from core.utils.espn_helpers import ESPN_ERRORS, get_league
 from data.channel_ids import ADMIN_CHANNEL_ID
@@ -20,6 +21,7 @@ from data.config import (
     LEAGUE_SHEET_NAME,
     PPR_HISTORY_SHEET_NAME,
     PPR_MANAGERS,
+    PICKEM_SHEET_NAME,
 )
 from data.messages import PPR_NO_DATA_MESSAGE, PPR_UPDATE_MESSAGE
 
@@ -196,6 +198,39 @@ class PPR(commands.Cog):
             row for year in sorted(self.finished) for row in self.finished[year]
         ]
         return league, season_rows(league), finished
+
+    async def _history_tab(self) -> Worksheet:
+        """The PPR history tab in the bot's spreadsheet, created if missing."""
+        return await asyncio.to_thread(
+            get_or_create_tab, PICKEM_SHEET_NAME, HISTORY_TAB, HISTORY_HEADER
+        )
+
+    async def _save_history(self, season: int, ranked: list[dict[str, Any]]) -> None:
+        """Adds one row per manager (season, owner, team, PPR, rank) below the
+        existing ones. `ranked` is this season's rows, best first."""
+        tab = await self._history_tab()
+        rows = [
+            [season, row["owner"], row["team"], round(row["ppr"], 3), rank]
+            for rank, row in enumerate(ranked, start=1)
+        ]
+        await asyncio.to_thread(tab.append_rows, rows)
+
+    async def _last_history(self, season: int) -> dict[str, tuple[float, int]]:
+        """Each manager's PPR and rank from the latest saved ranking of
+        `season`, by owner ID. Empty if there's none yet."""
+        tab = await self._history_tab()
+        rows = await asyncio.to_thread(
+            tab.get_all_values, value_render_option=ValueRenderOption.unformatted
+        )
+        last: dict[str, tuple[float, int]] = {}
+        for row in rows[1:]:
+            if str(row[0]) != str(season):
+                continue
+            try:
+                last[row[1]] = (float(row[3]), int(row[4]))
+            except (ValueError, IndexError):
+                continue
+        return last
 
     async def _get_managers(self, season: str | None = None) -> List[Dict[str, Any]]:
         """Reads each manager tab's PPR for a season (ESPN_YEAR by default).
