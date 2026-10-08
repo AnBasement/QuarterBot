@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/AnBasement/quarterbot/actions/workflows/main.yml/badge.svg)](https://github.com/AnBasement/quarterbot/actions/workflows/main.yml) [![codecov](https://codecov.io/gh/AnBasement/quarterbot/branch/main/graph/badge.svg?token=YdZEPsANH4)](https://codecov.io/gh/AnBasement/quarterbot)
 
-A Discord bot for ESPN fantasy football leagues. It runs a weekly NFL pick'em game, tracks the league's power ranking (PPR) through Google Sheets, and posts reminders so nobody forgets their waivers.
+A Discord bot for ESPN fantasy football leagues. It runs a weekly NFL pick'em game, calculates the league's power ranking (PPR) from ESPN, and posts reminders so nobody forgets their waivers.
 
 QuarterBot was originally built for the private server of the fantasy league Fest i Vest, as a project to learn Python, using AI as an assistant. As I've used Render with UptimeRobot to host it, this README is based on that setup. If you use a different host or run it locally, setup won't be identical.
 
@@ -34,18 +34,21 @@ No code or environment variable changes needed: the bot checks for a matching em
 
 ### PPR
 
-PPR is the fantasy league's own "power ranking", a number that attempts to capture how well a team did over a season, based on average points per game, the highest and lowest single-game scores, and win rate, normalized against the rest of the league's results. This is heavily inspired/ripped off from the Oklahomiraqi League's OPR system. The formula itself lives in the Google Sheet's template, not in this codebase. The bot only reads the already-calculated value, so any league using this bot inherits the same formula automatically unless they edit their own copy of the spreadsheet.
+PPR is the fantasy league's own "power ranking". It attempts to capture how well a team did over a season, based on average points per game, the highest and lowest single-game scores, and win rate, normalized against the rest of the league's results. This is heavily inspired/ripped off from the Oklahomiraqi League's OPR system. The bot calculates it from your ESPN league's results, so it works for any league out of the box, it only requires the ESPN settings.
 
 The formula, in plain terms:
 
 1. **Raw score** = `(avg points per game × 6) + ((highest + lowest single-game score) × 2) + (win% × 200 × 2)`, all divided by 10
 2. **Final PPR** = that raw score, divided by the league's average raw score for the season
 
-Dividing by the league average in step 2 normalizes the number so `1.0` always means "exactly league average", which keeps PPR comparable from one season to the next even as overall scoring levels rise or fall.
+Dividing by the league average in step 2 normalizes the number so `1.0` always means "exactly league average", which keeps PPR comparable from one season to the next even with fluctuating overall scoring levels. Only regular-season games count (playoffs are left out), and only finished weeks, so PPR builds up over the season. By design it can vary a lot the first few weeks. A tie counts as half a win.
 
-- Optional: it needs its own league spreadsheet (see [step 3](#3-set-up-google-sheets-access)). The rest of the bot works without it
-- `!ppr` (admins only) reads each manager's PPR from the league spreadsheet and posts the ranking, with each team's change in PPR and rank since the last run
-- Each run saves a snapshot to a history tab, which the next run compares against
+- `!ppr` (admins only) posts this season's ranking, with each team's change in PPR and rank since the last run
+- Managers are followed by their ESPN account, so a renamed team keeps its history
+- The bot keeps two tabs in the pick'em spreadsheet, both created automatically if they do not exist:
+    - `PPR history`: every ranking `!ppr` has posted, which the change arrows compare against
+    - `PPR`: every season's numbers (games, wins, points per game, highest and lowest game, raw score and PPR), one row per manager per season, for anyone who wants to look up an old season or build their own spreadsheet on top of it
+
 
 ### Custom commands
 

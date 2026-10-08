@@ -9,6 +9,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 ### Added
 - A player updates channel, fetching NFL injury and status reports from ESPN and posting to a specified channel as they come in, pinging league managers if the player is on their fantasy team. Activated with `PLAYER_UPDATES_CHANNEL_ID`, configurable with `PLAYER_UPDATE_TEMPLATE`
 
+### Changed
+- `!ppr` calculates PPR from the ESPN league instead of reading it from a league spreadsheet, and keeps its history in a `PPR history` tab in the pick'em spreadsheet. The league spreadsheet is no longer needed: `LEAGUE_SHEET_NAME`, `PPR_MANAGERS` and `PPR_HISTORY_SHEET_NAME` are no longer used and can be removed. The first `!ppr` after updating shows no changes, since the history starts fresh
+
 ## [1.1.0] - 05-10-2026
 
 ### Added
