@@ -50,11 +50,26 @@ ROSTER_REFRESH_SECONDS = 1800  # rosters change with pickups and trades
 STATE_TAB = "Player updates"
 
 
+def is_status_only(report: dict[str, Any]) -> bool:
+    """Whether a report's comment is empty or just repeats its status
+    ("questionable", "out", "ir"): ESPN's automated status entries, which get
+    re-issued with a new ID now and then."""
+    comment = report.get("shortComment", "").strip().lower()
+    kind = report.get("type", {})
+    return comment in {
+        "",
+        kind.get("description", "").lower(),
+        kind.get("abbreviation", "").lower(),
+    }
+
+
 def is_injury_news(report: dict[str, Any]) -> bool:
     """Whether a report is worth posting: an injury status, or an "Active"
     report that names an injury (cleared to play, practice updates). Not the
     after-game stat lines, not coaches' decisions, and not the plain entries
-    of the official inactive lists."""
+    of the official inactive lists or ESPN's automated status-only entries."""
+    if is_status_only(report):
+        return False  # ESPN's automated status entries: re-issued, and can flip
     comment = report.get("shortComment", "")
     match = NAME_THEN_BRACKETS.match(comment)
     if match and match.group(1).lower() == "coach's decision":
