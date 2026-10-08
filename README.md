@@ -325,7 +325,7 @@ mypy .
 ## Acknowledgements
 
 This project drew inspiration from [Red-DiscordBot](https://github.com/Cog-Creators/Red-DiscordBot), for ideas around cogs and bot structure.
-[Claude](https://claude.ai) has been very helpful throughout the bot's development, especially when it comes to writing test files and docstrings.
+[Claude](https://claude.ai) has been very helpful throughout the bot's development, especially when it comes to writing test files and docstrings. Most of the code is written by hand, and anything Claude writes is reviewed before it's committed.
 
 ## Changelog
 
