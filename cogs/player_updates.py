@@ -260,9 +260,10 @@ class PlayerUpdates(commands.Cog):
             # First start: take the newest report as the starting point, instead of
             # flooding the channel with two weeks' worth of reports.
             newest = max(reports, key=lambda r: parse_espn_date(r["date"]))
+            newest_at = parse_espn_date(newest["date"])
             self.last_minute = newest["date"]
             self.ids_at_last_minute = {
-                r["id"] for r in reports if r["date"] == newest["date"]
+                r["id"] for r in reports if parse_espn_date(r["date"]) == newest_at
             }
             await self._save_marker()
             logger.info("First player updates check: earlier reports not posted.")
