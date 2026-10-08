@@ -149,3 +149,9 @@ TRANSACTION_TRADE_HEADER = _message("TRANSACTION_TRADE_HEADER", "\U0001f501 Trad
 TRANSACTION_TRADE_LINE_TEMPLATE = _message(
     "TRANSACTION_TRADE_LINE_TEMPLATE", "{team} receives {players}"
 )
+
+# Player updates (cogs/player_updates.py)
+PLAYER_UPDATE_TEMPLATE = _message(
+    "PLAYER_UPDATE_TEMPLATE",
+    "**{player}** ({team}, {position}): {status}\n{comment}\n<{link}>",
+)

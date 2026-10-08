@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 import google.auth.exceptions
 import pytest
 from cogs import sheets
+from gspread.exceptions import WorksheetNotFound
 from core.errors import ClientAuthorizationError, MissingCredentialsError
 
 
@@ -89,3 +90,35 @@ def test_failed_login_is_not_remembered(monkeypatch):
 
     assert client == "client_instance"
     assert len(attempts) == 2
+
+
+def test_get_or_create_tab_returns_an_existing_tab(monkeypatch):
+    existing = MagicMock()
+    spreadsheet = MagicMock()
+    spreadsheet.worksheet.return_value = existing
+    monkeypatch.setattr(
+        sheets, "get_sheet", lambda name: MagicMock(spreadsheet=spreadsheet)
+    )
+
+    tab = sheets.get_or_create_tab("Pick'em", "Player updates", ["a", "b"])
+
+    assert tab is existing
+    spreadsheet.worksheet.assert_called_once_with("Player updates")
+    spreadsheet.add_worksheet.assert_not_called()
+
+
+def test_get_or_create_tab_creates_a_missing_tab_with_the_header(monkeypatch):
+    spreadsheet = MagicMock()
+    spreadsheet.worksheet.side_effect = WorksheetNotFound("Player updates")
+    new_tab = spreadsheet.add_worksheet.return_value
+    monkeypatch.setattr(
+        sheets, "get_sheet", lambda name: MagicMock(spreadsheet=spreadsheet)
+    )
+
+    tab = sheets.get_or_create_tab("Pick'em", "Player updates", ["a", "b"])
+
+    assert tab is new_tab
+    spreadsheet.add_worksheet.assert_called_once_with(
+        title="Player updates", rows=2, cols=2
+    )
+    new_tab.update.assert_called_once_with([["a", "b"]], "A1")

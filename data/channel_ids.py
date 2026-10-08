@@ -29,3 +29,5 @@ GAME_CHANNEL_ID = _required_channel_id("GAME_CHANNEL_ID")  # pick'em games
 ADMIN_CHANNEL_ID = _required_channel_id("ADMIN_CHANNEL_ID")  # errors and warnings
 # Optional: league moves (adds, drops, trades). None switches the feature off.
 TRANSACTIONS_CHANNEL_ID = _optional_channel_id("TRANSACTIONS_CHANNEL_ID")
+# Optional: NFL injury and status reports. None switches the feature off.
+PLAYER_UPDATES_CHANNEL_ID = _optional_channel_id("PLAYER_UPDATES_CHANNEL_ID")

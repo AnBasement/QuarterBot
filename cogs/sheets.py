@@ -5,6 +5,7 @@ import logging
 import os
 import gspread
 import gspread.exceptions
+from gspread.exceptions import WorksheetNotFound
 import google.auth.exceptions
 import requests
 from google.oauth2.service_account import Credentials
@@ -108,3 +109,20 @@ def yellow_format() -> Dict[str, Any]:
         "backgroundColor": {"red": 1.0, "green": 1.0, "blue": 0.0},
         "textFormat": {"foregroundColor": {"red": 0.0, "green": 0.0, "blue": 0.0}},
     }
+
+
+def get_or_create_tab(
+    spreadsheet_name: str, title: str, header: list[str]
+) -> Worksheet:
+    """A tab in a spreadsheet, found by its title. Created with `header` as its
+    first row if it doesn't exist yet. Blocking: call it through
+    asyncio.to_thread() from async code."""
+    base_sheet = get_sheet(spreadsheet_name)
+    spreadsheet = base_sheet.spreadsheet
+    try:
+        return spreadsheet.worksheet(title)
+    except WorksheetNotFound:
+        logger.info("Creating the %s tab.", title)
+        tab = spreadsheet.add_worksheet(title=title, rows=2, cols=len(header))
+        tab.update([header], "A1")
+        return tab
