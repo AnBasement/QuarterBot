@@ -66,7 +66,7 @@ Posts every add, drop, waiver claim and completed trade in the ESPN league to it
 
 ### Player updates
 
-Posts player updates (injury statuses, mid-game reports, cleared to play) from ESPN's public injury reports to a specified channel with links to the relevant player's page on ESPN. Checks every minute on game days and every five minutes on non-game days. Does not post coach's decision updates, game stat lines or plain inactive-list entries. Pings league managers if the player is on their team (requires `discord_ids.json` and ESPN league settings). Keeps track of what has been posted by using the `Player updates` tab in the pick'em spreadsheet. Entirely optional: set `PLAYER_UPDATES_CHANNEL_ID` to turn on. Message text is configurable with `PLAYER_UPDATE_TEMPLATE`.
+Posts player updates (injury statuses, mid-game reports, cleared to play) from ESPN's public injury reports to a specified channel with links to the relevant player's page on ESPN. Checks every minute on game days and every five minutes on non-game days. Does not post coach's decision updates, game stat lines, plain inactive-list entries or ESPN's bare status updates. Pings league managers if the player is on their team (requires `discord_ids.json` and ESPN league settings). Keeps track of what has been posted by using the `Player updates` tab in the pick'em spreadsheet. Entirely optional: set `PLAYER_UPDATES_CHANNEL_ID` to turn on. Message text is configurable with `PLAYER_UPDATE_TEMPLATE`.
 
 ### Other
 
