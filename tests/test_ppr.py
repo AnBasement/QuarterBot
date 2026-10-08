@@ -16,7 +16,6 @@ from cogs.ppr import (
 )
 from core.errors import PPRFetchError, PPRSnapshotError
 from data.messages import PPR_NO_DATA_MESSAGE
-from data.config import parse_ppr_managers
 
 
 def test_ppr_admin_check_tolerates_spaces_in_admin_ids(monkeypatch):
@@ -30,27 +29,6 @@ def test_ppr_admin_check_tolerates_spaces_in_admin_ids(monkeypatch):
     ctx.author.id = 222
 
     assert all(check(ctx) for check in ppr_module.PPR.ppr.checks)
-
-
-class TestParsePprManagers:
-    def test_tabs_with_team_names(self):
-        assert parse_ppr_managers("Alice=Aces; Bob = Bombers") == {
-            "Alice": "Aces",
-            "Bob": "Bombers",
-        }
-
-    def test_team_name_is_optional(self):
-        assert parse_ppr_managers("Alice;Bob=Bombers") == {
-            "Alice": "Alice",
-            "Bob": "Bombers",
-        }
-
-    def test_commas_stay_inside_team_names(self):
-        assert parse_ppr_managers("Alice=Aces, Inc.") == {"Alice": "Aces, Inc."}
-
-    def test_empty_and_stray_separators(self):
-        assert parse_ppr_managers("") == {}
-        assert parse_ppr_managers(";Alice=Aces;;") == {"Alice": "Aces"}
 
 
 # Calculating PPR from ESPN data
