@@ -6,6 +6,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 
 ## [Unreleased]
 
+### Added
+- A player updates channel, fetching NFL injury and status reports from ESPN and posting to a specified channel as they come in, pinging league managers if the player is on their fantasy team. Activated with `PLAYER_UPDATES_CHANNEL_ID`, configurable with `PLAYER_UPDATE_TEMPLATE`
+
 ## [1.1.0] - 05-10-2026
 
 ### Added

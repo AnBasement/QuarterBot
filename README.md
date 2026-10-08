@@ -64,6 +64,10 @@ Each entry is `"command name": "reply"`, so the example above gives `!rules` and
 
 Posts every add, drop, waiver claim and completed trade in the ESPN league to its own channel, within about a minute of it happening (trade proposals aren't posted). Optional: set `TRANSACTIONS_CHANNEL_ID` to switch it on. The bot remembers the last move it posted in a `Transactions` tab it creates in the pick'em spreadsheet, so a restart doesn't post anything twice.
 
+### Player updates
+
+Posts player updates (injury statuses, mid-game reports, cleared to play) from ESPN's public injury reports to a specified channel with links to the relevant player's page on ESPN. Checks every minute on game days and every five minutes on non-game days. Does not post coach's decision updates, game stat lines or plain inactive-list entries. Pings league managers if the player is on their team (requires `discord_ids.json` and ESPN league settings). Keeps track of what has been posted by using the `Player updates` tab in the pick'em spreadsheet. Entirely optional: set `PLAYER_UPDATES_CHANNEL_ID` to turn on. Message text is configurable with `PLAYER_UPDATE_TEMPLATE`.
+
 ### Other
 
 The bot sends a reminder every Tuesday not to forget waivers before the new week starts.
@@ -198,6 +202,7 @@ Settings are given to the bot as "environment variables": named values like `GAM
 | `PPR_HISTORY_SHEET_NAME` | No (default `PPR History`) | Name of the Sheets tab that stores PPR snapshot history |
 | `FANTASY_FINAL_WEEK` | No (default `17`) | Final week of the league's ESPN fantasy season (regular + playoff weeks); check your own league's ESPN settings |
 | `TRANSACTIONS_CHANNEL_ID` | No | Channel for league moves (adds, drops, waiver claims, trades). Leave it out to switch the feature off |
+| `PLAYER_UPDATES_CHANNEL_ID` | No | Channel for NFL player updates (injury updates, mid-game injuries, cleared to play). Leave it out to switch the feature off |
 
 **Bot-posted message text:** everything the bot says in Discord (reminders, confirmations, the weekly matchup digest, inactive-player alerts, and so on) is also configurable, each with a neutral English default. See `.env.example` for every variable name, its default, and any `{placeholder}` values a message fills in. No code changes are needed to run the bot in your own language or wording.
 
