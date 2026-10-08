@@ -21,6 +21,7 @@ from cogs.player_updates import (
     advance_marker,
     format_update,
     is_injury_news,
+    is_status_only,
     new_reports,
     player_id,
     seconds_until_next_check,
@@ -118,6 +119,70 @@ def test_an_injured_inactive_with_a_lowercase_name_is_posted():
     assert is_injury_news(
         report("Out", "van den Berg (knee) is inactive for Sunday's game.")
     )
+
+
+# Status-only entries (ESPN's automated ones)
+
+
+def status_entry(status, comment, description, abbreviation, **kwargs):
+    """An entry like ESPN's automated ones: the comment is just the status."""
+    entry = report(status, comment, **kwargs)
+    entry["type"] = {"description": description, "abbreviation": abbreviation}
+    return entry
+
+
+QUESTIONABLE = ("Questionable", "questionable", "questionable", "Q")
+INJURED_RESERVE = ("Injured Reserve", "ir", "Injured Reserve", "IR")
+
+
+def test_a_comment_repeating_the_status_is_status_only():
+    assert is_status_only(status_entry(*QUESTIONABLE))
+
+
+def test_ir_is_status_only_through_the_abbreviation():
+    """The description is "Injured Reserve", so only "IR" matches "ir"."""
+    assert is_status_only(status_entry(*INJURED_RESERVE))
+
+
+def test_status_only_ignores_capitals_and_spaces():
+    assert is_status_only(status_entry("Out", " Out ", "out", "O"))
+
+
+def test_an_empty_comment_is_status_only():
+    assert is_status_only(status_entry("Active", "", "active", "A"))
+
+
+def test_a_null_comment_is_status_only():
+    """ESPN could send null (None in Python) instead of leaving a field out:
+    a crash here would stop every check at the same entry, forever."""
+    assert is_status_only(status_entry("Out", None, "out", "O"))
+
+
+def test_null_type_fields_dont_crash():
+    entry = report("Out", "Sweat (knee) is out.")
+    entry["type"] = None
+    assert not is_status_only(entry)
+
+    entry["type"] = {"description": None, "abbreviation": None}
+    assert not is_status_only(entry)
+
+
+def test_a_real_comment_is_not_status_only():
+    entry = status_entry(
+        "Questionable",
+        "Moore (ankle) didn't practice Thursday.",
+        "questionable",
+        "Q",
+    )
+
+    assert not is_status_only(entry)
+
+
+@pytest.mark.parametrize("entry", [QUESTIONABLE, INJURED_RESERVE])
+def test_status_only_entries_are_not_posted(entry):
+    """Even with an injury status: ESPN re-issues these with new IDs, and they
+    can flip between two statuses (Out, IR, Out...)."""
+    assert not is_injury_news(status_entry(*entry))
 
 
 # player_id
@@ -315,6 +380,19 @@ async def test_a_stat_line_is_not_posted_but_moves_the_marker(monkeypatch):
 
     channel.send.assert_not_awaited()
     assert cog.saved == [(LATER, {"stats"})]
+
+
+@pytest.mark.asyncio
+async def test_a_status_only_entry_is_not_posted_but_moves_the_marker(
+    monkeypatch,
+):
+    repeat = status_entry(*QUESTIONABLE, report_id="-2031957", date=LATER)
+    cog, channel = make_cog(monkeypatch, [repeat])
+
+    await cog.check_once()
+
+    channel.send.assert_not_awaited()
+    assert cog.saved == [(LATER, {"-2031957"})]
 
 
 @pytest.mark.asyncio
