@@ -1,8 +1,16 @@
 """Tests for ppr.py"""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
-from cogs.ppr import PPR
+from cogs.ppr import (
+    PPR,
+    owner_id,
+    owner_name,
+    rank_change,
+    season_rows,
+    season_stats,
+)
 from core.errors import ClientAuthorizationError, PPRFetchError
 from data.config import parse_ppr_managers
 
@@ -195,3 +203,123 @@ async def test_failed_open_is_tried_again():
         sheet = await cog._spreadsheet()  # pylint: disable=protected-access
 
     assert sheet == "sheet"
+
+
+# Calculating PPR from ESPN data
+
+
+def team(scores, outcomes, team_id=1, name="Aces", owners=None):
+    """A team shaped like espn_api's: week-by-week scores and results."""
+    if owners is None:
+        owners = [{"id": f"{{OWNER-{team_id}}}", "firstName": "Ann", "lastName": "Lee"}]
+    return SimpleNamespace(
+        scores=scores,
+        outcomes=outcomes,
+        team_id=team_id,
+        team_name=name,
+        owners=owners,
+    )
+
+
+def league(teams, regular_weeks=3, year=2025):
+    return SimpleNamespace(
+        teams=teams,
+        year=year,
+        settings=SimpleNamespace(reg_season_count=regular_weeks),
+    )
+
+
+def test_raw_score_matches_a_hand_calculation():
+    # Points per game 100, highest 120 + lowest 80, won 2 of 3:
+    # (100 * 6 + (120 + 80) * 2 + (2/3) * 200 * 2) / 10 = 126.667
+    stats = season_stats(team([100, 120, 80], ["W", "L", "W"]), 3)
+
+    assert stats is not None
+    assert (stats["games"], stats["wins"], stats["losses"]) == (3, 2, 1)
+    assert (stats["ppg"], stats["high"], stats["low"]) == (100, 120, 80)
+    assert stats["raw"] == pytest.approx(126.6667, abs=1e-4)
+
+
+def test_only_played_weeks_count():
+    """ESPN lists future weeks as "U" with 0.0: counting them would make
+    everyone's lowest game 0 in September."""
+    stats = season_stats(team([100, 120, 0.0, 0.0], ["W", "L", "U", "U"]), 4)
+
+    assert stats is not None
+    assert stats["games"] == 2
+    assert stats["low"] == 100
+
+
+def test_playoff_weeks_are_left_out():
+    """PPR is regular season only: week 4 here is a playoff week."""
+    stats = season_stats(team([100, 120, 80, 200], ["W", "L", "W", "W"]), 3)
+
+    assert stats is not None
+    assert stats["games"] == 3
+    assert stats["high"] == 120
+
+
+def test_a_tie_counts_as_half_a_win():
+    won_and_tied = season_stats(team([100, 100], ["W", "T"]), 2)
+    won_one_of_two = season_stats(team([100, 100], ["W", "L"]), 2)
+
+    assert won_and_tied is not None and won_one_of_two is not None
+    # Win% 0.75 vs 0.5: the raw scores differ by 0.25 * 200 * 2 / 10 = 10.
+    assert won_and_tied["raw"] - won_one_of_two["raw"] == pytest.approx(10)
+
+
+def test_no_stats_before_the_first_game():
+    assert season_stats(team([0.0, 0.0], ["U", "U"]), 2) is None
+
+
+def test_ppr_is_raw_score_divided_by_the_league_average():
+    good = team([150, 150, 150], ["W", "W", "W"], team_id=1, name="Good")
+    bad = team([90, 90, 90], ["L", "L", "L"], team_id=2, name="Bad")
+
+    rows = season_rows(league([good, bad]))
+
+    by_team = {row["team"]: row for row in rows}
+    average = (by_team["Good"]["raw"] + by_team["Bad"]["raw"]) / 2
+    assert by_team["Good"]["ppr"] == pytest.approx(by_team["Good"]["raw"] / average)
+    # Two teams: the league average sits exactly between them.
+    assert by_team["Good"]["ppr"] + by_team["Bad"]["ppr"] == pytest.approx(2.0)
+
+
+def test_season_rows_carry_the_season_owner_and_team():
+    rows = season_rows(league([team([100, 100, 100], ["W", "L", "W"])], year=2021))
+
+    assert rows[0]["season"] == 2021
+    assert rows[0]["owner"] == "{OWNER-1}"
+    assert rows[0]["manager"] == "Ann Lee"
+    assert rows[0]["team"] == "Aces"
+    assert rows[0]["ppr"] == pytest.approx(1.0)  # alone, so exactly average
+
+
+def test_a_team_that_hasnt_played_is_left_out():
+    played = team([100, 100, 100], ["W", "L", "W"], team_id=1)
+    not_yet = team([0.0, 0.0, 0.0], ["U", "U", "U"], team_id=2)
+
+    rows = season_rows(league([played, not_yet]))
+
+    assert [row["owner"] for row in rows] == ["{OWNER-1}"]
+
+
+def test_no_rows_before_anyone_has_played():
+    assert season_rows(league([team([0.0], ["U"])], regular_weeks=1)) == []
+
+
+def test_owner_id_falls_back_to_the_team_id():
+    assert owner_id(team([], [], team_id=7, owners=[])) == "team-7"
+
+
+def test_owner_name_is_first_and_last_name():
+    assert owner_name(team([], [])) == "Ann Lee"
+    assert owner_name(team([], [], owners=[])) == ""
+
+
+@pytest.mark.parametrize(
+    "old, new, arrow",
+    [(3, 3, "="), (3, 1, "⇧2"), (1, 2, "⇩1")],
+)
+def test_rank_change(old, new, arrow):
+    assert rank_change(old, new) == arrow

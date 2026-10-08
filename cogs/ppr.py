@@ -25,10 +25,95 @@ from data.messages import PPR_NO_DATA_MESSAGE, PPR_UPDATE_MESSAGE
 logger = logging.getLogger(__name__)
 
 
+PLAYED = {"W", "L", "T"}  # ESPN tags unplayed weeks as "U"
+
+
 def _display_name(tab_title: str) -> str:
     """The team name PPR_MANAGERS gives a tab (ignoring case and spaces), else the tab title."""
     by_normalized = {tab.strip().lower(): team for tab, team in PPR_MANAGERS.items()}
     return by_normalized.get(tab_title.strip().lower(), tab_title)
+
+
+def owner_id(team: Any) -> str:
+    """The team's ESPN account ID (its first owner). It stays the same across
+    seasons and team names, so it's how a manager is followed over the years."""
+    if team.owners:
+        return str(team.owners[0].get("id", f"team-{team.team_id}"))
+    return f"team-{team.team_id}"
+
+
+def owner_name(team: Any) -> str:
+    """The first owner's full name, for the data tab."""
+    if not team.owners:
+        return ""
+    owner = team.owners[0]
+    return f"{owner.get('firstName', '')} {owner.get('lastName', '')}".strip()
+
+
+def season_stats(team: Any, regular_weeks: int) -> dict[str, Any] | None:
+    """A team's regular-season numbers from the weeks played so far, with its
+    raw PPR score. None if it hasn't played yet."""
+    weeks = [
+        (score, outcome)
+        for score, outcome in zip(
+            team.scores[:regular_weeks], team.outcomes[:regular_weeks]
+        )
+        if outcome in PLAYED
+    ]
+    if not weeks:
+        return None
+    scores = [score for score, _ in weeks]
+    outcomes = [outcome for _, outcome in weeks]
+    games = len(weeks)
+    wins, losses, ties = outcomes.count("W"), outcomes.count("L"), outcomes.count("T")
+    ppg = sum(scores) / games
+    high, low = max(scores), min(scores)
+    win_pct = (wins + ties / 2) / games
+    raw = (ppg * 6 + (high + low) * 2 + win_pct * 200 * 2) / 10
+    return {
+        "games": games,
+        "wins": wins,
+        "losses": losses,
+        "ties": ties,
+        "ppg": ppg,
+        "high": high,
+        "low": low,
+        "raw": raw,
+    }
+
+
+def season_rows(league: Any) -> list[dict[str, Any]]:
+    """One row per team that has played this season, with its PPR: its raw
+    score divided by the league's average raw score."""
+    rows = []
+    for team in league.teams:
+        stats = season_stats(team, league.settings.reg_season_count)
+        if stats is None:
+            continue
+        rows.append(
+            {
+                "season": league.year,
+                "owner": owner_id(team),
+                "manager": owner_name(team),
+                "team": team.team_name,
+                **stats,
+            }
+        )
+    if not rows:
+        return []
+    average = sum(row["raw"] for row in rows) / len(rows)
+    for row in rows:
+        row["ppr"] = row["raw"] / average
+    return rows
+
+
+def rank_change(old_rank: int, new_rank: int) -> str:
+    """The arrow shown next to a team: "=", "⇧2" (up two places) or "⇩1"."""
+    if old_rank == new_rank:
+        return "="
+    if old_rank > new_rank:
+        return f"⇧{old_rank - new_rank}"
+    return f"⇩{new_rank - old_rank}"
 
 
 class PPR(commands.Cog):
