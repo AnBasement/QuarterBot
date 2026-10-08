@@ -14,6 +14,7 @@ from discord.ext import commands
 from core.errors import PPRFetchError, PPRSnapshotError
 from cogs.sheets import get_client
 from core.decorators import admin_only
+from core.utils.espn_helpers import ESPN_ERRORS, get_league
 from data.channel_ids import ADMIN_CHANNEL_ID
 from data.config import (
     LEAGUE_SHEET_NAME,
@@ -24,7 +25,29 @@ from data.messages import PPR_NO_DATA_MESSAGE, PPR_UPDATE_MESSAGE
 
 logger = logging.getLogger(__name__)
 
-
+HISTORY_TAB = "PPR history"
+HISTORY_HEADER = ["season", "owner", "team", "ppr", "rank"]
+DATA_TAB = "PPR"
+DATA_HEADER = [
+    "season",
+    "owner",
+    "manager",
+    "team",
+    "games",
+    "wins",
+    "losses",
+    "ties",
+    "ppg",
+    "high",
+    "low",
+    "raw",
+    "ppr",
+]
+# What a Google Sheets call can raise when Google is the problem.
+SHEETS_ERRORS = (
+    gspread.exceptions.GSpreadException,
+    requests.exceptions.RequestException,
+)
 PLAYED = {"W", "L", "T"}  # ESPN tags unplayed weeks as "U"
 
 
@@ -124,6 +147,8 @@ class PPR(commands.Cog):
         # Opened on first use (see _spreadsheet()), so a Google hiccup while the
         # bot starts doesn't disable !ppr until the next restart.
         self.sheet: gspread.Spreadsheet | None = None
+        # Finished seasons' rows by year, loaded from ESPN once.
+        self.finished: dict[int, list[dict[str, Any]]] = {}
 
     async def _spreadsheet(self) -> gspread.Spreadsheet:
         """The league spreadsheet, opened on first use and reused after that.
@@ -147,6 +172,30 @@ class PPR(commands.Cog):
             await admin_channel.send(message)
         except Exception as exc:
             logger.exception("Could not send an admin warning in PPR: %s", exc)
+
+    async def _league(self, year: int | None = None) -> Any:
+        """The ESPN league for a season (ESPN_YEAR by default). Raises
+        PPRFetchError if ESPN or the settings are the problem."""
+        try:
+            return await asyncio.to_thread(get_league, year)
+        except ESPN_ERRORS as exc:
+            raise PPRFetchError(
+                "-", str(year or "current"), f"Couldn't load the ESPN league: {exc}"
+            ) from exc
+
+    async def _seasons(
+        self,
+    ) -> tuple[Any, list[dict[str, Any]], list[dict[str, Any]]]:
+        """The current league, this season's rows, and every finished season's
+        rows (loaded from ESPN the first time, remembered after that)."""
+        league = await self._league()
+        for year in league.previousSeasons:
+            if year not in self.finished:
+                self.finished[year] = season_rows(await self._league(year))
+        finished = [
+            row for year in sorted(self.finished) for row in self.finished[year]
+        ]
+        return league, season_rows(league), finished
 
     async def _get_managers(self, season: str | None = None) -> List[Dict[str, Any]]:
         """Reads each manager tab's PPR for a season (ESPN_YEAR by default).

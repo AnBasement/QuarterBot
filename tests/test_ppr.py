@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
+import requests
 from cogs.ppr import (
     PPR,
     owner_id,
@@ -323,3 +324,74 @@ def test_owner_name_is_first_and_last_name():
 )
 def test_rank_change(old, new, arrow):
     assert rank_change(old, new) == arrow
+
+
+# Loading the seasons
+
+
+def fake_espn(monkeypatch, current=2026, previous=(2024, 2025), error=None):
+    """Replaces get_league with a fake ESPN league per season. Returns the list
+    of seasons asked for (None means "the current season")."""
+    asked: list[int | None] = []
+
+    def get_league(year=None):
+        asked.append(year)
+        if error is not None:
+            raise error
+        season = current if year is None else year
+        fake = league([team([100, 120, 80], ["W", "L", "W"])], year=season)
+        fake.previousSeasons = list(previous) if year is None else []
+        return fake
+
+    monkeypatch.setattr("cogs.ppr.get_league", get_league)
+    return asked
+
+
+@pytest.mark.asyncio
+async def test_seasons_returns_this_season_and_the_finished_ones(monkeypatch):
+    fake_espn(monkeypatch, current=2026, previous=(2024, 2025))
+    cog = PPR(MagicMock())
+
+    league_now, current, finished = await cog._seasons()
+
+    assert league_now.year == 2026
+    assert [row["season"] for row in current] == [2026]
+    assert [row["season"] for row in finished] == [2024, 2025]  # oldest first
+
+
+@pytest.mark.asyncio
+async def test_finished_seasons_are_loaded_once(monkeypatch):
+    """They never change, so after the first !ppr only the current season is
+    fetched. (After a restart they're simply loaded again.)"""
+    asked = fake_espn(monkeypatch, previous=(2024, 2025))
+    cog = PPR(MagicMock())
+
+    await cog._seasons()
+    first = list(asked)
+    await cog._seasons()
+
+    assert sorted(first, key=str) == sorted([None, 2024, 2025], key=str)
+    assert asked[len(first) :] == [None]  # the second call: current season only
+
+
+@pytest.mark.asyncio
+async def test_a_new_finished_season_is_loaded_when_it_appears(monkeypatch):
+    """When ESPN_YEAR moves on, last season shows up in previousSeasons."""
+    asked = fake_espn(monkeypatch, current=2026, previous=(2025,))
+    cog = PPR(MagicMock())
+    await cog._seasons()
+
+    asked = fake_espn(monkeypatch, current=2027, previous=(2025, 2026))
+    _, _, finished = await cog._seasons()
+
+    assert 2026 in asked and 2025 not in asked
+    assert [row["season"] for row in finished] == [2025, 2026]
+
+
+@pytest.mark.asyncio
+async def test_espn_problems_become_ppr_fetch_errors(monkeypatch):
+    fake_espn(monkeypatch, error=requests.exceptions.ConnectionError("ESPN down"))
+    cog = PPR(MagicMock())
+
+    with pytest.raises(PPRFetchError):
+        await cog._seasons()
