@@ -26,6 +26,7 @@ async def fetch_json(url: str) -> dict[str, Any]:
         ) as session:
             try:
                 async with session.get(url) as resp:
+                    resp.raise_for_status()
                     data = await resp.json()
             except asyncio.TimeoutError:
                 logger.warning(
@@ -33,6 +34,7 @@ async def fetch_json(url: str) -> dict[str, Any]:
                 )
                 await asyncio.sleep(ESPN_RETRY_DELAY_SECONDS)
                 async with session.get(url) as resp:
+                    resp.raise_for_status()
                     data = await resp.json()
     except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
         raise APIFetchError(url, e) from e

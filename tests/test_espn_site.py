@@ -1,7 +1,9 @@
 """Tests for core/utils/espn_site.py."""
 
 import asyncio
+from unittest.mock import MagicMock
 
+import aiohttp
 import pytest
 
 from core.errors import APIFetchError
@@ -12,8 +14,9 @@ URL = "https://site.api.espn.com/test"
 
 def fake_espn(monkeypatch, answers):
     """Replaces aiohttp with a fake ESPN that gives `answers` in order: a dict
-    is returned as the JSON, an exception is raised instead. Returns the list
-    of URLs asked for and the list of sleeps, for the test to check."""
+    is returned as the JSON, an exception is raised instead, and a number is
+    an HTTP error code (like 500) with a JSON error body. Returns the list of
+    URLs asked for and the list of sleeps, for the test to check."""
     urls: list[str] = []
     sleeps: list[float] = []
 
@@ -29,7 +32,13 @@ def fake_espn(monkeypatch, answers):
         async def __aexit__(self, exc_type, exc, tb):
             pass
 
+        def raise_for_status(self):
+            if isinstance(self.answer, int):
+                raise aiohttp.ClientResponseError(MagicMock(), (), status=self.answer)
+
         async def json(self):
+            if isinstance(self.answer, int):
+                return {"error": "something went wrong"}
             return self.answer
 
     class FakeSession:
@@ -80,3 +89,13 @@ async def test_two_timeouts_raise_api_fetch_error(monkeypatch):
     with pytest.raises(APIFetchError):
         await fetch_json(URL)
     assert len(urls) == 2
+
+
+@pytest.mark.asyncio
+async def test_an_error_status_raises_api_fetch_error(monkeypatch):
+    """ESPN's error answers can have a JSON body too: it must not be mistaken
+    for real data, or an outage goes unnoticed."""
+    fake_espn(monkeypatch, [500])
+
+    with pytest.raises(APIFetchError):
+        await fetch_json(URL)
