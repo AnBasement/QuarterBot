@@ -133,7 +133,7 @@ def seconds_until_next_check(now: datetime) -> int:
 
 
 class PlayerUpdates(commands.Cog):
-    """Posts league moves to PLAYER_UPDATES_CHANNEL_ID as they happen."""
+    """Posts player injury updates to PLAYER_UPDATES_CHANNEL_ID as they happen."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
