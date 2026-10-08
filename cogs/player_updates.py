@@ -54,12 +54,12 @@ def is_status_only(report: dict[str, Any]) -> bool:
     """Whether a report's comment is empty or just repeats its status
     ("questionable", "out", "ir"): ESPN's automated status entries, which get
     re-issued with a new ID now and then."""
-    comment = report.get("shortComment", "").strip().lower()
-    kind = report.get("type", {})
+    comment = (report.get("shortComment") or "").strip().lower()
+    kind = report.get("type") or {}
     return comment in {
         "",
-        kind.get("description", "").lower(),
-        kind.get("abbreviation", "").lower(),
+        (kind.get("description") or "").lower(),
+        (kind.get("abbreviation") or "").lower(),
     }
 
 

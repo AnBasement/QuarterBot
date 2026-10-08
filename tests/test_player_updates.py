@@ -152,6 +152,21 @@ def test_an_empty_comment_is_status_only():
     assert is_status_only(status_entry("Active", "", "active", "A"))
 
 
+def test_a_null_comment_is_status_only():
+    """ESPN could send null (None in Python) instead of leaving a field out:
+    a crash here would stop every check at the same entry, forever."""
+    assert is_status_only(status_entry("Out", None, "out", "O"))
+
+
+def test_null_type_fields_dont_crash():
+    entry = report("Out", "Sweat (knee) is out.")
+    entry["type"] = None
+    assert not is_status_only(entry)
+
+    entry["type"] = {"description": None, "abbreviation": None}
+    assert not is_status_only(entry)
+
+
 def test_a_real_comment_is_not_status_only():
     entry = status_entry(
         "Questionable",
