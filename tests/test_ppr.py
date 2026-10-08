@@ -14,99 +14,9 @@ from cogs.ppr import (
     season_rows,
     season_stats,
 )
-from core.errors import ClientAuthorizationError, PPRFetchError
+from core.errors import PPRFetchError, PPRSnapshotError
+from data.messages import PPR_NO_DATA_MESSAGE
 from data.config import parse_ppr_managers
-
-DUMMY_MANAGERS = [
-    {"team": "Alice", "ppr": 10.0},
-    {"team": "Bob", "ppr": 8.5},
-    {"team": "Carol", "ppr": 9.2},
-]
-
-# Same format _save_snapshot() writes: display name (from PPR_MANAGERS), PPR, rank.
-DUMMY_HISTORY = [
-    ["Aces", "9.5", "2"],
-    ["Bombers", "8.0", "3"],
-    ["Comets", "9.0", "1"],
-]
-
-DUMMY_PPR_MANAGERS = {
-    "Alice": "Aces",
-    "Bob": "Bombers",
-    "Carol": "Comets",
-}
-
-
-@pytest.fixture(name="ppr_cog")
-@patch("cogs.ppr.get_client")
-def fixture_ppr_cog(mock_get_client):
-    """Create a PPR cog with mocked Google Sheets client."""
-    mock_bot = MagicMock()
-    mock_sheet = MagicMock()
-    dummy_client = MagicMock()
-    dummy_client.open.return_value = mock_sheet
-    mock_get_client.return_value = dummy_client
-
-    ppr_cog = PPR(mock_bot)
-    ppr_cog.sheet = mock_sheet
-    return ppr_cog
-
-
-@pytest.mark.asyncio
-async def test_save_snapshot(monkeypatch, ppr_cog):
-    monkeypatch.setattr("cogs.ppr.PPR_MANAGERS", DUMMY_PPR_MANAGERS)
-    ws_mock = MagicMock()
-    ws_mock.col_values.return_value = [""]  # empty column
-    ws_mock.range.return_value = [MagicMock() for _ in range(len(DUMMY_MANAGERS) * 3)]
-    ppr_cog.sheet.worksheet.return_value = ws_mock
-
-    await ppr_cog._save_snapshot(DUMMY_MANAGERS)  # pylint: disable=protected-access
-    ws_mock.update_cells.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_ppr_command_logic(monkeypatch, ppr_cog):
-    """Ranks by PPR, with the change and rank movement since the last snapshot."""
-    monkeypatch.setattr(
-        ppr_cog, "_get_managers", AsyncMock(return_value=DUMMY_MANAGERS)
-    )
-    monkeypatch.setattr("cogs.ppr.PPR_MANAGERS", DUMMY_PPR_MANAGERS)
-    ctx = MagicMock()
-    ctx.send = AsyncMock()
-    ws_mock = MagicMock()
-    ws_mock.get_all_values.return_value = DUMMY_HISTORY
-    ppr_cog.sheet.worksheet.return_value = ws_mock
-
-    await ppr_cog.ppr.callback(ppr_cog, ctx)
-
-    ctx.send.assert_called_once()
-    sent_msg = ctx.send.call_args[0][0]
-    # History rows are matched by display name.
-    assert "1. Aces: 10.000 (+0.500) ⇧1" in sent_msg
-    assert "2. Comets: 9.200 (+0.200) ⇩1" in sent_msg
-    assert "3. Bombers: 8.500 (+0.500) =" in sent_msg
-
-
-@pytest.mark.asyncio
-async def test_get_managers_reads_the_espn_year_row(monkeypatch):
-    """The season row comes from ESPN_YEAR."""
-    monkeypatch.setenv("ESPN_YEAR", "2027")
-    monkeypatch.setattr("cogs.ppr.PPR_MANAGERS", {"Alice": "Aces"})
-    ws = MagicMock()
-    ws.title = "Alice"
-    ws.get_all_values.return_value = [
-        ["2025", "1.1"],
-        ["2026", "1.2"],
-        ["2027", "1.3"],
-    ]
-    cog = PPR.__new__(PPR)
-    cog.sheet = MagicMock()
-    cog.sheet.worksheets.return_value = [ws]
-
-    managers = await cog._get_managers()  # pylint: disable=protected-access
-
-    assert managers == [{"team": "Alice", "ppr": 1.3}]
-    cog.sheet.worksheets.assert_called_once()  # one trip to Google, not two
 
 
 def test_ppr_admin_check_tolerates_spaces_in_admin_ids(monkeypatch):
@@ -120,23 +30,6 @@ def test_ppr_admin_check_tolerates_spaces_in_admin_ids(monkeypatch):
     ctx.author.id = 222
 
     assert all(check(ctx) for check in ppr_module.PPR.ppr.checks)
-
-
-@pytest.mark.asyncio
-async def test_snapshot_uses_configured_history_tab(monkeypatch):
-    """Snapshots go to the PPR_HISTORY_SHEET_NAME tab."""
-    monkeypatch.setattr("cogs.ppr.PPR_HISTORY_SHEET_NAME", "My PPR Tab")
-    cog = PPR.__new__(PPR)
-    cog.sheet = MagicMock()
-    history_ws = cog.sheet.worksheet.return_value
-    history_ws.col_values.return_value = []
-    history_ws.range.return_value = [MagicMock(), MagicMock(), MagicMock()]
-
-    await cog._save_snapshot(  # pylint: disable=protected-access
-        [{"team": "Alice", "ppr": 1.2}]
-    )
-
-    cog.sheet.worksheet.assert_called_with("My PPR Tab")
 
 
 class TestParsePprManagers:
@@ -158,54 +51,6 @@ class TestParsePprManagers:
     def test_empty_and_stray_separators(self):
         assert parse_ppr_managers("") == {}
         assert parse_ppr_managers(";Alice=Aces;;") == {"Alice": "Aces"}
-
-
-@pytest.mark.asyncio
-async def test_ppr_reports_missing_config_instead_of_guessing(monkeypatch):
-    """Without PPR_MANAGERS, !ppr says so instead of showing nothing."""
-    monkeypatch.setenv("ESPN_YEAR", "2026")
-    monkeypatch.setattr("cogs.ppr.PPR_MANAGERS", {})
-    cog = PPR.__new__(PPR)
-    cog.sheet = MagicMock()
-
-    with pytest.raises(PPRFetchError, match="PPR_MANAGERS is not set"):
-        await cog._get_managers()  # pylint: disable=protected-access
-
-
-def test_cog_loads_while_google_is_unreachable():
-    """A Google hiccup while the bot starts must not disable !ppr until the
-    next restart: the spreadsheet is only opened when it's needed."""
-    with patch(
-        "cogs.ppr.get_client", side_effect=ClientAuthorizationError("Google down")
-    ):
-        cog = PPR(MagicMock())
-
-    assert cog.sheet is None
-
-
-@pytest.mark.asyncio
-async def test_spreadsheet_is_opened_on_first_use_and_reused():
-    client = MagicMock()
-    with patch("cogs.ppr.get_client", return_value=client):
-        cog = PPR(MagicMock())
-        first = await cog._spreadsheet()  # pylint: disable=protected-access
-        second = await cog._spreadsheet()  # pylint: disable=protected-access
-
-    assert first is second is client.open.return_value
-    client.open.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_failed_open_is_tried_again():
-    client = MagicMock()
-    client.open.side_effect = [ClientAuthorizationError("Google down"), "sheet"]
-    with patch("cogs.ppr.get_client", return_value=client):
-        cog = PPR(MagicMock())
-        with pytest.raises(ClientAuthorizationError):
-            await cog._spreadsheet()  # pylint: disable=protected-access
-        sheet = await cog._spreadsheet()  # pylint: disable=protected-access
-
-    assert sheet == "sheet"
 
 
 # Calculating PPR from ESPN data
@@ -559,3 +404,117 @@ async def test_export_leaves_no_old_rows_behind(monkeypatch):
 
     assert len(tab.cells) == 2  # header + one row
     assert tab.row_count == 2
+
+
+# The !ppr command
+
+
+def current_row(owner, team_name, ppr, season=2026):
+    return {"season": season, "owner": owner, "team": team_name, "ppr": ppr}
+
+
+def cog_for_ppr(current, finished=(), last=None):
+    """A PPR cog with ESPN and the spreadsheet faked, and a fake ctx."""
+    cog = PPR(MagicMock())
+    cog._seasons = AsyncMock(return_value=(MagicMock(), current, list(finished)))
+    cog._last_history = AsyncMock(return_value=last or {})
+    cog._save_history = AsyncMock()
+    cog._export = AsyncMock()
+    cog._notify_admin = AsyncMock()
+    ctx = MagicMock()
+    ctx.send = AsyncMock()
+    return cog, ctx
+
+
+@pytest.mark.asyncio
+async def test_ppr_posts_the_ranking_with_changes_since_last_time():
+    current = [
+        current_row("{B}", "Bombers", 0.95),
+        current_row("{A}", "Aces", 1.10),
+        current_row("{C}", "Comets", 1.02),
+    ]
+    last = {"{A}": (1.05, 2), "{B}": (0.95, 3), "{C}": (1.04, 1)}
+    cog, ctx = cog_for_ppr(current, last=last)
+
+    await cog.ppr.callback(cog, ctx)
+
+    sent = ctx.send.call_args.args[0]
+    assert "1. Aces: 1.100 (+0.050) ⇧1" in sent
+    assert "2. Comets: 1.020 (-0.020) ⇩1" in sent
+    assert "3. Bombers: 0.950 (+0.000) =" in sent
+
+
+@pytest.mark.asyncio
+async def test_a_manager_without_history_shows_no_change():
+    """The first run of a season (or of the new tab) has nothing to compare."""
+    cog, ctx = cog_for_ppr([current_row("{A}", "Aces", 1.0)], last={})
+
+    await cog.ppr.callback(cog, ctx)
+
+    assert "1. Aces: 1.000 (+0.000) =" in ctx.send.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_ppr_saves_the_history_and_the_data_tab_after_posting():
+    finished = [current_row("{A}", "Aces", 0.9, season=2025)]
+    current = [current_row("{B}", "Bombers", 0.95), current_row("{A}", "Aces", 1.1)]
+    cog, ctx = cog_for_ppr(current, finished=finished)
+    order = []
+    ctx.send.side_effect = lambda *a: order.append("post")
+    cog._save_history.side_effect = lambda *a: order.append("history")
+
+    await cog.ppr.callback(cog, ctx)
+
+    assert order == ["post", "history"]
+    season, ranked = cog._save_history.await_args.args
+    assert season == 2026
+    assert [row["owner"] for row in ranked] == ["{A}", "{B}"]  # best first
+    cog._export.assert_awaited_once_with(finished + current)
+
+
+@pytest.mark.asyncio
+async def test_before_the_first_game_ppr_says_there_is_no_data():
+    cog, ctx = cog_for_ppr([])
+
+    await cog.ppr.callback(cog, ctx)
+
+    ctx.send.assert_awaited_once_with(PPR_NO_DATA_MESSAGE)
+    cog._save_history.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_espn_failing_tells_the_admin_and_raises():
+    cog, ctx = cog_for_ppr([])
+    cog._seasons = AsyncMock(side_effect=PPRFetchError("-", "2026", "ESPN down"))
+
+    with pytest.raises(PPRFetchError):
+        await cog.ppr.callback(cog, ctx)
+
+    cog._notify_admin.assert_awaited_once()
+    ctx.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_history_still_posts_the_ranking():
+    """Arrows are nice to have: the ranking goes out without them."""
+    cog, ctx = cog_for_ppr([current_row("{A}", "Aces", 1.0)])
+    cog._last_history = AsyncMock(
+        side_effect=requests.exceptions.ConnectionError("Google down")
+    )
+
+    await cog.ppr.callback(cog, ctx)
+
+    assert "1. Aces: 1.000 (+0.000) =" in ctx.send.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_save_raises_after_posting():
+    cog, ctx = cog_for_ppr([current_row("{A}", "Aces", 1.0)])
+    cog._save_history = AsyncMock(
+        side_effect=requests.exceptions.ConnectionError("Google down")
+    )
+
+    with pytest.raises(PPRSnapshotError):
+        await cog.ppr.callback(cog, ctx)
+
+    ctx.send.assert_awaited_once()  # the ranking already went out
