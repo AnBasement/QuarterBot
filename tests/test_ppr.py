@@ -2,9 +2,11 @@
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+import gspread.exceptions
 import pytest
 import requests
 from cogs.ppr import (
+    DATA_HEADER,
     PPR,
     owner_id,
     owner_name,
@@ -494,3 +496,66 @@ async def test_last_history_asks_for_plain_numbers():
     await cog._last_history(2026)
 
     assert tab.read_with.get("value_render_option") == "UNFORMATTED_VALUE"
+
+
+# The data tab
+
+
+class FakeGridTab:
+    """A tab with a fixed size, like Google's: writing past the last row
+    fails, and resize() grows or shrinks it (dropping rows below)."""
+
+    def __init__(self, rows=2):
+        self.row_count = rows
+        self.cells: list[list] = []
+
+    def resize(self, rows=None, cols=None):
+        self.row_count = rows
+        self.cells = self.cells[:rows]
+
+    def update(self, values, range_name):
+        assert range_name == "A1"
+        if len(values) > self.row_count:
+            raise gspread.exceptions.APIError(MagicMock())  # "exceeds grid limits"
+        self.cells = [list(row) for row in values] + self.cells[len(values) :]
+
+
+def data_row(season, owner, ppr):
+    row = {key: 0 for key in DATA_HEADER}
+    row.update(season=season, owner=owner, manager="Ann Lee", team="Aces", ppr=ppr)
+    return row
+
+
+@pytest.mark.asyncio
+async def test_export_writes_the_header_and_every_row_in_column_order(monkeypatch):
+    tab = FakeGridTab(rows=2)  # what get_or_create_tab() creates
+    monkeypatch.setattr("cogs.ppr.get_or_create_tab", lambda *args: tab)
+    rows = [
+        data_row(2024, "{A}", 1.1),
+        data_row(2025, "{A}", 0.9),
+        data_row(2026, "{A}", 1.0),
+    ]
+
+    await PPR(MagicMock())._export(rows)
+
+    assert tab.cells[0] == DATA_HEADER
+    assert len(tab.cells) == 4
+    by_column = dict(zip(DATA_HEADER, tab.cells[2]))
+    assert by_column["season"] == 2025
+    assert by_column["owner"] == "{A}"
+    assert by_column["ppr"] == 0.9
+
+
+@pytest.mark.asyncio
+async def test_export_leaves_no_old_rows_behind(monkeypatch):
+    """Fewer rows than last time (e.g. a manager's rows removed): the tab
+    shrinks, so the old extra rows don't linger at the bottom."""
+    tab = FakeGridTab(rows=2)
+    monkeypatch.setattr("cogs.ppr.get_or_create_tab", lambda *args: tab)
+    cog = PPR(MagicMock())
+    await cog._export([data_row(2025, "{A}", 1.0), data_row(2025, "{B}", 1.0)])
+
+    await cog._export([data_row(2025, "{A}", 1.0)])
+
+    assert len(tab.cells) == 2  # header + one row
+    assert tab.row_count == 2

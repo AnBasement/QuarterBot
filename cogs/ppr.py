@@ -232,6 +232,16 @@ class PPR(commands.Cog):
                 continue
         return last
 
+    async def _export(self, rows: list[dict[str, Any]]) -> None:
+        """Rewrites the PPR data tab with `rows`: every season's rows, one per
+        manager per season, in DATA_HEADER's column order."""
+        tab = await asyncio.to_thread(
+            get_or_create_tab, PICKEM_SHEET_NAME, DATA_TAB, DATA_HEADER
+        )
+        values = [DATA_HEADER] + [[row[key] for key in DATA_HEADER] for row in rows]
+        await asyncio.to_thread(tab.resize, rows=len(values), cols=len(DATA_HEADER))
+        await asyncio.to_thread(tab.update, values, "A1")
+
     async def _get_managers(self, season: str | None = None) -> List[Dict[str, Any]]:
         """Reads each manager tab's PPR for a season (ESPN_YEAR by default).
 
