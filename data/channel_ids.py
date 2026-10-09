@@ -31,3 +31,5 @@ ADMIN_CHANNEL_ID = _required_channel_id("ADMIN_CHANNEL_ID")  # errors and warnin
 TRANSACTIONS_CHANNEL_ID = _optional_channel_id("TRANSACTIONS_CHANNEL_ID")
 # Optional: NFL injury and status reports. None switches the feature off.
 PLAYER_UPDATES_CHANNEL_ID = _optional_channel_id("PLAYER_UPDATES_CHANNEL_ID")
+# Optional: release notes when a new version first runs. None switches it off.
+CHANGELOG_CHANNEL_ID = _optional_channel_id("CHANGELOG_CHANNEL_ID")

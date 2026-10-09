@@ -169,3 +169,9 @@ TRANSACTION_TRADE_HEADER = _message("TRANSACTION_TRADE_HEADER", "\U0001f501 Trad
 TRANSACTION_TRADE_LINE_TEMPLATE = _message(
     "TRANSACTION_TRADE_LINE_TEMPLATE", "{team} receives {players}"
 )
+
+# Release announcements (cogs/announcements.py)
+RELEASE_ANNOUNCEMENT_TEMPLATE = _message(
+    "RELEASE_ANNOUNCEMENT_TEMPLATE",
+    "**quarterbot {version} is live!** What's new:\n{notes}",
+)
