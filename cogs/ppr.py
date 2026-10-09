@@ -122,6 +122,20 @@ def season_rows(league: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def ranking_lines(
+    ranked: list[dict[str, Any]], last: dict[str, tuple[float, int]]
+) -> list[str]:
+    """One line per manager, best first: rank, team, PPR, and the change in PPR
+    and rank since the last saved ranking ("(+0.000) =" without a change)."""
+    lines = []
+    for rank, row in enumerate(ranked, start=1):
+        old = last.get(row["owner"])
+        diff = row["ppr"] - old[0] if old else 0.0
+        change = rank_change(old[1], rank) if old else "="
+        lines.append(f"{rank}. {row['team']}: {row['ppr']:.3f} ({diff:+.3f}) {change}")
+    return lines
+
+
 def rank_change(old_rank: int, new_rank: int) -> str:
     """The arrow shown next to a team: "=", "⇧2" (up two places) or "⇩1"."""
     if old_rank == new_rank:
@@ -218,6 +232,28 @@ class PPR(commands.Cog):
         await asyncio.to_thread(tab.resize, rows=len(values), cols=len(DATA_HEADER))
         await asyncio.to_thread(tab.update, values, "A1")
 
+    async def _last_history_or_empty(self, season: int) -> dict[str, tuple[float, int]]:
+        """_last_history(), or an empty history if Google fails: the ranking is
+        still worth posting, just without arrows."""
+        try:
+            return await self._last_history(season)
+        except SHEETS_ERRORS as exc:
+            logger.warning("Could not read the PPR history: %s", exc)
+            return {}
+
+    async def _save(
+        self, season: int, ranked: list[dict[str, Any]], rows: list[dict[str, Any]]
+    ) -> None:
+        """Saves this ranking to the history tab and rewrites the data tab.
+        Raises PPRSnapshotError if Google fails."""
+        try:
+            await self._save_history(season, ranked)
+            await self._export(rows)
+        except SHEETS_ERRORS as exc:
+            raise PPRSnapshotError(
+                f"Could not save PPR to the spreadsheet: {exc}"
+            ) from exc
+
     @commands.command(name="ppr")
     @admin_only()
     async def ppr(self, ctx: commands.Context) -> None:
@@ -234,29 +270,10 @@ class PPR(commands.Cog):
 
         season = current[0]["season"]
         ranked = sorted(current, key=lambda row: row["ppr"], reverse=True)
-        try:
-            last = await self._last_history(season)
-        except SHEETS_ERRORS as exc:
-            logger.warning("Could not read the PPR history: %s", exc)
-            last = {}  # post without arrows rather than not at all
-
-        lines = []
-        for rank, row in enumerate(ranked, start=1):
-            old = last.get(row["owner"])
-            diff = row["ppr"] - old[0] if old else 0.0
-            change = rank_change(old[1], rank) if old else "="
-            lines.append(
-                f"{rank}. {row['team']}: {row['ppr']:.3f} ({diff:+.3f}) {change}"
-            )
+        last = await self._last_history_or_empty(season)
+        lines = ranking_lines(ranked, last)
         await ctx.send(PPR_UPDATE_MESSAGE.format(rankings="\n".join(lines)))
-
-        try:
-            await self._save_history(season, ranked)
-            await self._export(finished + current)
-        except SHEETS_ERRORS as exc:
-            raise PPRSnapshotError(
-                f"Could not save PPR to the spreadsheet: {exc}"
-            ) from exc
+        await self._save(season, ranked, finished + current)
 
 
 async def setup(bot: commands.Bot) -> None:

@@ -8,6 +8,7 @@ import requests
 from cogs.ppr import (
     DATA_HEADER,
     PPR,
+    ranking_lines,
     owner_id,
     owner_name,
     rank_change,
@@ -514,3 +515,66 @@ async def test_a_failed_save_raises_after_posting():
         await cog.ppr.callback(cog, ctx)
 
     ctx.send.assert_awaited_once()  # the ranking already went out
+
+
+# Shared by !ppr and the recap
+
+
+def test_ranking_lines_show_the_change_since_the_last_ranking():
+    ranked = [current_row("{A}", "Aces", 1.1), current_row("{B}", "Bombers", 0.9)]
+    last = {"{A}": (1.05, 2), "{B}": (0.95, 1)}
+
+    assert ranking_lines(ranked, last) == [
+        "1. Aces: 1.100 (+0.050) ⇧1",
+        "2. Bombers: 0.900 (-0.050) ⇩1",
+    ]
+
+
+def test_ranking_lines_without_history_show_no_change():
+    assert ranking_lines([current_row("{A}", "Aces", 1.0)], {}) == [
+        "1. Aces: 1.000 (+0.000) ="
+    ]
+
+
+@pytest.mark.asyncio
+async def test_last_history_or_empty_returns_the_history():
+    cog = PPR(MagicMock())
+    cog._last_history = AsyncMock(return_value={"{A}": (1.0, 1)})
+
+    assert await cog._last_history_or_empty(2026) == {"{A}": (1.0, 1)}
+
+
+@pytest.mark.asyncio
+async def test_last_history_or_empty_is_empty_when_google_fails():
+    cog = PPR(MagicMock())
+    cog._last_history = AsyncMock(
+        side_effect=requests.exceptions.ConnectionError("Google down")
+    )
+
+    assert await cog._last_history_or_empty(2026) == {}
+
+
+@pytest.mark.asyncio
+async def test_save_writes_the_history_and_the_data_tab():
+    cog = PPR(MagicMock())
+    cog._save_history = AsyncMock()
+    cog._export = AsyncMock()
+    ranked = [current_row("{A}", "Aces", 1.0)]
+    rows = ranked + [current_row("{A}", "Aces", 0.9, season=2025)]
+
+    await cog._save(2026, ranked, rows)
+
+    cog._save_history.assert_awaited_once_with(2026, ranked)
+    cog._export.assert_awaited_once_with(rows)
+
+
+@pytest.mark.asyncio
+async def test_save_turns_google_errors_into_ppr_snapshot_errors():
+    cog = PPR(MagicMock())
+    cog._save_history = AsyncMock(
+        side_effect=requests.exceptions.ConnectionError("Google down")
+    )
+    cog._export = AsyncMock()
+
+    with pytest.raises(PPRSnapshotError):
+        await cog._save(2026, [], [])
