@@ -81,6 +81,11 @@ Every Tuesday at 18:00 (league time), the bot reminds everyone not to forget the
 
 About an hour before kickoff, the bot checks every team's starting lineup for players who are Out, Doubtful, Inactive or suspended, and warns the manager (kept out of the night, like the reminders). With `discord_ids.json` it pings the right person; without it, it posts one general `@everyone` message.
 
+### Release announcements
+
+Posts the latest release notes when the bot runs a new version, so your server knows what changed. The first time the bot starts on a new version, it posts that version's notes from the [CHANGELOG](CHANGELOG.md) to its specified channel, without pinging anyone. It remembers which version it last announced in an `Announced version` tab it creates in the pick'em spreadsheet, so restarts and redeploys don't post anything twice. The notes are posted in English (the CHANGELOG's language); the heading line is configurable with `RELEASE_ANNOUNCEMENT_TEMPLATE`. Optional feature: set `CHANGELOG_CHANNEL_ID` to switch it on.
+
+
 ## Planned features
 
 ### Trivia
@@ -191,6 +196,7 @@ Settings are given to the bot as "environment variables": named values like `GAM
 | `FANTASY_FINAL_WEEK` | No (default `17`) | Final week of the league's ESPN fantasy season (regular + playoff weeks); check your own league's ESPN settings |
 | `TRANSACTIONS_CHANNEL_ID` | No | Channel for league moves (adds, drops, waiver claims, trades). Leave it out to switch the feature off |
 | `PLAYER_UPDATES_CHANNEL_ID` | No | Channel for NFL player updates (injury updates, mid-game injuries, cleared to play). Leave it out to switch the feature off |
+| `CHANGELOG_CHANNEL_ID` | No | Channel for the release notes when the bot first runs a new version. Leave it out to switch the feature off |
 
 **Bot-posted message text:** everything the bot says in Discord (reminders, confirmations, the weekly matchup digest, inactive-player alerts, and so on) is also configurable, each with a neutral English default. See `.env.example` for every variable name, its default, and any `{placeholder}` values a message fills in. No code changes are needed to run the bot in your own language or wording.
 
@@ -247,6 +253,7 @@ Put `credentials.json` (and the optional JSON files) in the same folder. Don't r
 
 ```text
 ├── cogs/                           # Discord bot modules
+│   ├── announcements.py            # Release notes when a new version runs
 │   ├── fantasy_reminders.py        # Waiver reminder, weekly recap, inactive-player alerts
 │   ├── pickem.py                   # Core logic for the pick'em game
 │   ├── player_updates.py           # NFL injury and status reports
