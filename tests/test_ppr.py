@@ -8,6 +8,8 @@ import requests
 from cogs.ppr import (
     DATA_HEADER,
     PPR,
+    career_lines,
+    career_stats,
     ranking_lines,
     owner_id,
     owner_name,
@@ -578,3 +580,180 @@ async def test_save_turns_google_errors_into_ppr_snapshot_errors():
 
     with pytest.raises(PPRSnapshotError):
         await cog._save(2026, [], [])
+
+
+# Career PPR
+
+
+def season(owner, year, ppr, games=3):
+    return {"owner": owner, "season": year, "ppr": ppr, "games": games}
+
+
+def test_career_stats_average_seasons_and_value():
+    finished = [
+        season("{A}", 2024, 1.2),
+        season("{A}", 2025, 0.9),
+        season("{B}", 2025, 1.0),
+    ]
+
+    average, seasons, value = career_stats(finished, "{A}")
+
+    assert average == pytest.approx(1.05)
+    assert seasons == 2
+    assert value == pytest.approx(0.1)  # +0.2 and -0.1
+
+
+def test_career_stats_is_none_without_a_finished_season():
+    assert career_stats([season("{A}", 2025, 1.0)], "{B}") is None
+
+
+def test_career_lines_compare_with_the_career_before_the_season():
+    # Before 2025: Aces 1.10 (1st), Bombers 0.90 (2nd). In 2025: Aces 1.00,
+    # Bombers 1.30, and Comets join with 1.30.
+    before = [season("{A}", 2024, 1.1), season("{B}", 2024, 0.9)]
+    after = before + [
+        season("{A}", 2025, 1.0),
+        season("{B}", 2025, 1.3),
+        season("{C}", 2025, 1.3),
+    ]
+    managers = [("{A}", "Aces"), ("{B}", "Bombers"), ("{C}", "Comets")]
+
+    assert career_lines(managers, before, after) == [
+        "1. Comets: 1.300 over 1 season",
+        "   Career value: +0.300",
+        "2. Bombers: 1.100 (+0.200) = over 2 seasons",
+        "   Career value: +0.200 (+0.300 this season)",
+        "3. Aces: 1.050 (-0.050) ⇩2 over 2 seasons",
+        "   Career value: +0.100 (+0.000 this season)",
+    ]
+
+
+def test_career_arrows_rank_the_old_career_by_average_not_value():
+    """Aces: one great season (higher average). Bombers: three good ones
+    (higher total value). Ranked by average, nobody moved this season."""
+    before = [season("{A}", 2024, 1.3)] + [
+        season("{B}", year, 1.15) for year in (2022, 2023, 2024)
+    ]
+    after = before + [season("{A}", 2025, 1.3), season("{B}", 2025, 1.15)]
+    managers = [("{A}", "Aces"), ("{B}", "Bombers")]
+
+    lines = career_lines(managers, before, after)
+
+    assert lines[0].startswith("1. Aces: 1.300 (+0.000) =")
+    assert lines[2].startswith("2. Bombers: 1.150 (+0.000) =")
+
+
+def test_career_lines_leave_out_a_manager_without_finished_seasons():
+    after = [season("{A}", 2025, 1.0)]
+
+    lines = career_lines([("{A}", "Aces"), ("{B}", "Bombers")], [], after)
+
+    assert not any("Bombers" in line for line in lines)
+
+
+def season_end_league(regular_weeks=3, year=2025):
+    """A league whose teams are Aces ({OWNER-1}) and Bombers ({OWNER-2})."""
+    return SimpleNamespace(
+        year=year,
+        teams=[
+            team([], [], team_id=1, name="Aces"),
+            team([], [], team_id=2, name="Bombers"),
+        ],
+        settings=SimpleNamespace(reg_season_count=regular_weeks),
+    )
+
+
+def cog_with_seasons(current, finished):
+    cog = PPR(MagicMock())
+    cog._seasons = AsyncMock(return_value=(MagicMock(), current, finished))
+    cog._last_history = AsyncMock(return_value={})
+    cog._save = AsyncMock()
+    return cog
+
+
+@pytest.mark.asyncio
+async def test_season_end_shows_final_ppr_without_arrows_then_career():
+    current = [
+        {**season("{OWNER-1}", 2025, 1.1), "team": "Aces"},
+        {**season("{OWNER-2}", 2025, 0.9), "team": "Bombers"},
+    ]
+    finished = [season("{OWNER-1}", 2024, 0.9), season("{OWNER-2}", 2024, 1.1)]
+    cog = cog_with_seasons(current, finished)
+
+    lines = await cog.season_end_section(season_end_league())
+
+    assert lines[:4] == [
+        "",
+        "**Final PPR 2025:**",
+        "1. Aces: 1.100",
+        "2. Bombers: 0.900",
+    ]
+    assert lines[4:6] == ["", "**Career PPR:**"]
+    # The season just ended counts: both have two seasons now, averaging 1.000.
+    assert "over 2 seasons" in lines[6] and "over 2 seasons" in lines[8]
+
+
+@pytest.mark.asyncio
+async def test_season_end_career_waits_until_the_regular_season_is_over():
+    current = [{**season("{OWNER-1}", 2025, 1.1, games=2), "team": "Aces"}]
+    finished = [season("{OWNER-1}", 2024, 0.9)]
+    cog = cog_with_seasons(current, finished)
+
+    lines = await cog.season_end_section(season_end_league())
+
+    career = lines[lines.index("**Career PPR:**") + 1]
+    assert career.startswith("1. Aces: 0.900")  # 2024 only
+
+
+@pytest.mark.asyncio
+async def test_season_end_passes_the_recaps_league_on():
+    cog = cog_with_seasons([], [])
+    league_obj = season_end_league()
+
+    assert await cog.season_end_section(league_obj) == []
+    cog._seasons.assert_awaited_once_with(league_obj)
+
+
+# The weekly recap section
+
+
+@pytest.mark.asyncio
+async def test_recap_section_is_a_heading_and_the_ranking():
+    current = [current_row("{B}", "Bombers", 0.9), current_row("{A}", "Aces", 1.1)]
+    finished = [current_row("{A}", "Aces", 1.0, season=2025)]
+    cog = cog_with_seasons(current, finished)
+    cog._last_history = AsyncMock(return_value={"{A}": (1.0, 2), "{B}": (1.0, 1)})
+    league_obj = MagicMock()
+
+    lines = await cog.recap_section(league_obj, 5)
+
+    assert lines == [
+        "",
+        "**PPR after week 5:**",
+        "1. Aces: 1.100 (+0.100) ⇧1",
+        "2. Bombers: 0.900 (-0.100) ⇩1",
+    ]
+    cog._seasons.assert_awaited_once_with(league_obj)
+
+
+@pytest.mark.asyncio
+async def test_recap_section_saves_the_ranking():
+    """So next week's recap compares with this one."""
+    current = [current_row("{B}", "Bombers", 0.9), current_row("{A}", "Aces", 1.1)]
+    finished = [current_row("{A}", "Aces", 1.0, season=2025)]
+    cog = cog_with_seasons(current, finished)
+
+    await cog.recap_section(MagicMock(), 5)
+
+    season_saved, ranked, rows = cog._save.await_args.args
+    assert season_saved == 2026
+    assert [row["owner"] for row in ranked] == ["{A}", "{B}"]
+    assert rows == finished + current
+
+
+@pytest.mark.asyncio
+async def test_recap_section_is_empty_before_the_first_game():
+    cog = cog_with_seasons([], [])
+
+    assert await cog.recap_section(MagicMock(), 1) == []
+    cog._save.assert_not_awaited()

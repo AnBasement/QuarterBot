@@ -19,7 +19,17 @@ from data.channel_ids import ADMIN_CHANNEL_ID
 from data.config import (
     PICKEM_SHEET_NAME,
 )
-from data.messages import PPR_NO_DATA_MESSAGE, PPR_UPDATE_MESSAGE
+from data.messages import (
+    PPR_CAREER_FIRST_LINE_TEMPLATE,
+    PPR_CAREER_FIRST_VALUE_TEMPLATE,
+    PPR_CAREER_HEADER_LABEL,
+    PPR_CAREER_LINE_TEMPLATE,
+    PPR_CAREER_VALUE_TEMPLATE,
+    PPR_FINAL_HEADER_TEMPLATE,
+    PPR_NO_DATA_MESSAGE,
+    PPR_RECAP_HEADER_TEMPLATE,
+    PPR_UPDATE_MESSAGE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +157,60 @@ def career_stats(
     return sum(pprs) / len(pprs), len(pprs), sum(ppr - 1 for ppr in pprs)
 
 
+def career_lines(
+    managers: list[tuple[str, str]],
+    before: list[dict[str, Any]],
+    after: list[dict[str, Any]],
+) -> list[str]:
+    """Two lines per manager, best career PPR first: career PPR with the change
+    and rank movement since `before`, and career value with what the latest
+    season added. `managers` is (owner ID, team name); `before` and `after` are
+    finished seasons' rows without and with the season just ended."""
+    old = {}
+    new = {}
+    for owner, team_name in managers:
+        old_stats = career_stats(before, owner)
+        new_stats = career_stats(after, owner)
+        if old_stats is not None:
+            old[owner] = old_stats
+        if new_stats is not None:
+            new[owner] = (team_name, *new_stats)
+    old_ranks = {
+        owner: rank
+        for rank, owner in enumerate(
+            sorted(old, key=lambda owner: old[owner][0], reverse=True), start=1
+        )
+    }
+    lines = []
+    ranked = sorted(new, key=lambda owner: new[owner][1], reverse=True)
+    for rank, owner in enumerate(ranked, start=1):
+        team_name, average, seasons, value = new[owner]
+        if owner not in old:
+            lines.append(
+                PPR_CAREER_FIRST_LINE_TEMPLATE.format(
+                    rank=rank, team=team_name, average=average
+                )
+            )
+            lines.append("   " + PPR_CAREER_FIRST_VALUE_TEMPLATE.format(value=value))
+            continue
+        old_average, _, old_value = old[owner]
+        lines.append(
+            PPR_CAREER_LINE_TEMPLATE.format(
+                rank=rank,
+                team=team_name,
+                average=average,
+                change=average - old_average,
+                arrow=rank_change(old_ranks[owner], rank),
+                seasons=seasons,
+            )
+        )
+        lines.append(
+            "   "
+            + PPR_CAREER_VALUE_TEMPLATE.format(value=value, added=value - old_value)
+        )
+    return lines
+
+
 def rank_change(old_rank: int, new_rank: int) -> str:
     """The arrow shown next to a team: "=", "⇧2" (up two places) or "⇩1"."""
     if old_rank == new_rank:
@@ -264,6 +328,42 @@ class PPR(commands.Cog):
             raise PPRSnapshotError(
                 f"Could not save PPR to the spreadsheet: {exc}"
             ) from exc
+
+    async def recap_section(self, league: Any, week: int) -> list[str]:
+        """The PPR section for the weekly recap of `week`: a heading and this
+        season's ranking with changes since the last saved one. Saves the
+        ranking first, so next week's arrows compare with it. Empty before the
+        first game. Raises PPRFetchError or PPRSnapshotError."""
+        _, current, finished = await self._seasons(league)
+        if not current:
+            return []
+        season = current[0]["season"]
+        ranked = sorted(current, key=lambda row: row["ppr"], reverse=True)
+        lines = ranking_lines(ranked, await self._last_history_or_empty(season))
+        await self._save(season, ranked, finished + current)
+        return ["", PPR_RECAP_HEADER_TEMPLATE.format(week=week), *lines]
+
+    async def season_end_section(self, league: Any) -> list[str]:
+        """The PPR part of the season-end recap: the season's final PPR, then
+        each manager's career PPR, including this season once its regular
+        season is over. Raises PPRFetchError."""
+        _, current, finished = await self._seasons(league)
+        if not current:
+            return []
+        ranked = sorted(current, key=lambda row: row["ppr"], reverse=True)
+        lines = ["", PPR_FINAL_HEADER_TEMPLATE.format(year=league.year)]
+        lines += [
+            f"{rank}. {row['team']}: {row['ppr']:.3f}"
+            for rank, row in enumerate(ranked, start=1)
+        ]
+
+        regular_weeks = league.settings.reg_season_count
+        season_over = all(row["games"] == regular_weeks for row in current)
+        after = finished + current if season_over else finished
+        managers = [(owner_id(team), team.team_name) for team in league.teams]
+        lines += ["", PPR_CAREER_HEADER_LABEL]
+        lines += career_lines(managers, finished, after)
+        return lines
 
     @commands.command(name="ppr")
     @admin_only()
