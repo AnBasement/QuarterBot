@@ -5,15 +5,17 @@ import logging
 import re
 from pathlib import Path
 
+import discord
 import gspread.exceptions
 import requests
 from discord.ext import commands
 from gspread.worksheet import Worksheet
 
 from cogs.sheets import get_or_create_tab
-from core.utils.discord_helpers import get_text_channel
+from core.utils.discord_helpers import get_text_channel, split_message
 from data.channel_ids import ADMIN_CHANNEL_ID, CHANGELOG_CHANNEL_ID
 from data.config import PICKEM_SHEET_NAME
+from data.messages import RELEASE_ANNOUNCEMENT_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,8 @@ class Announcements(commands.Cog):
         self.task: asyncio.Task[None] | None = None
         if CHANGELOG_CHANNEL_ID is None:
             logger.info("CHANGELOG_CHANNEL_ID not set; release announcements off.")
+        else:
+            self.task = self.bot.loop.create_task(self.announce())
 
     async def cog_unload(self) -> None:
         """Stops the background task."""
@@ -92,3 +96,38 @@ class Announcements(commands.Cog):
         """Writes the latest announced version to the spreadsheet."""
         tab = await self._state_tab()
         await asyncio.to_thread(tab.update, [[str(version)]], "A2")
+
+    async def announce_once(self) -> None:
+        """Posts the newest release's notes if they haven't been posted yet.
+        Raises if the file, Google or Discord fails; nothing is saved then, so
+        the next start tries again."""
+        channel_id = CHANGELOG_CHANNEL_ID
+        if channel_id is None:
+            return
+        channel = get_text_channel(self.bot, channel_id)
+        if channel is None:
+            logger.warning("Changelog channel %s not found.", channel_id)
+            return
+        text = await asyncio.to_thread(CHANGELOG.read_text, encoding="utf-8")
+        release = latest_release(text)
+        if release is None:
+            return
+        version, notes = release
+        if version == await self._load_announced():
+            return
+        message = RELEASE_ANNOUNCEMENT_TEMPLATE.format(version=version, notes=notes)
+        for chunk in split_message(message):
+            await channel.send(chunk, allowed_mentions=discord.AllowedMentions.none())
+        await self._save_announced(version)
+
+    async def announce(self) -> None:
+        """Waits for Discord, then announces once. Runs once per start."""
+        await self.bot.wait_until_ready()
+        try:
+            await self.announce_once()
+        except (OSError, discord.HTTPException, *SHEETS_ERRORS) as exc:
+            logger.error("Release announcement failed: %s", exc)
+            await self._notify_admin(
+                f"[announcements] Couldn't announce the new version: {exc}. "
+                "It's tried again the next time the bot starts."
+            )

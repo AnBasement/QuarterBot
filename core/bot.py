@@ -44,6 +44,7 @@ COGS = [
     "cogs.fantasy_reminders",  # general reminders for the fantasy league
     "cogs.transactions",  # posts league moves (if TRANSACTIONS_CHANNEL_ID is set)
     "cogs.player_updates",  # status updates for NFL players
+    "cogs.announcements",  # release notes (if CHANGELOG_CHANNEL_ID is set)
     "cogs.responses",  # custom commands; must load last (see cogs/responses.py)
 ]
 
