@@ -8,7 +8,13 @@ import pytz
 import requests
 
 from cogs.fantasy_reminders import FantasyReminders, setup
-from data.messages import WAIVER_REMINDER_MESSAGE
+from cogs.ppr import PPR
+from core.errors import PPRFetchError
+from data.messages import (
+    LOSS_STREAKS_HEADER_LABEL,
+    SEASON_END_MESSAGE,
+    WAIVER_REMINDER_MESSAGE,
+)
 
 
 def _close_instead_of_scheduling(coro):
@@ -527,3 +533,106 @@ async def test_failed_alert_is_retried_next_round(mock_bot, mock_channel):
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestPprInTheRecap:
+    """The recap asks the PPR cog for its section. FANTASY_FINAL_WEEK is 17 and
+    the regular season 15 weeks here."""
+
+    @staticmethod
+    def setup_recap(mock_bot, upcoming_week, ppr_cog_loaded=True):
+        """A recap cog whose bot has a PPR cog with faked sections. Returns
+        the recap cog, the PPR cog and the league."""
+        ppr = PPR(Mock())
+        ppr.recap_section = AsyncMock(
+            return_value=["", "**PPR WEEKLY**", "1. Aces: 1.000 (+0.000) ="]
+        )
+        ppr.season_end_section = AsyncMock(
+            return_value=["", "**PPR SEASON END**", "1. Aces: 1.000"]
+        )
+        mock_bot.get_cog = Mock(return_value=ppr if ppr_cog_loaded else None)
+        teams = [make_digest_team("Aces", 10), make_digest_team("Bombers", 4)]
+        league = make_digest_league(upcoming_week, teams)
+        league.settings.reg_season_count = 15
+        with patch.object(FantasyReminders, "reminder_scheduler", return_value=None):
+            cog = FantasyReminders(mock_bot)
+        cog._notify_admin = AsyncMock()
+        return cog, ppr, league
+
+    @staticmethod
+    def sent_text(mock_channel) -> str:
+        return "\n".join(call.args[0] for call in mock_channel.send.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_a_regular_season_week_gets_the_ppr_section_before_the_preview(
+        self, mock_bot, mock_channel
+    ):
+        cog, ppr, league = self.setup_recap(mock_bot, upcoming_week=6)
+
+        await cog.build_matchup_digest(mock_channel, league)
+
+        text = self.sent_text(mock_channel)
+        assert text.index(LOSS_STREAKS_HEADER_LABEL) < text.index("**PPR WEEKLY**")
+        assert text.index("**PPR WEEKLY**") < text.index("Week 6")  # the preview
+        ppr.recap_section.assert_awaited_once_with(league, 5)
+
+    @pytest.mark.asyncio
+    async def test_the_last_regular_season_week_still_gets_it(
+        self, mock_bot, mock_channel
+    ):
+        cog, ppr, league = self.setup_recap(mock_bot, upcoming_week=16)
+
+        await cog.build_matchup_digest(mock_channel, league)
+
+        ppr.recap_section.assert_awaited_once_with(league, 15)
+
+    @pytest.mark.asyncio
+    async def test_a_playoff_week_gets_no_ppr_section(self, mock_bot, mock_channel):
+        cog, ppr, league = self.setup_recap(mock_bot, upcoming_week=17)
+
+        await cog.build_matchup_digest(mock_channel, league)
+
+        ppr.recap_section.assert_not_awaited()
+        ppr.season_end_section.assert_not_awaited()
+        assert "PPR" not in self.sent_text(mock_channel)
+
+    @pytest.mark.asyncio
+    async def test_the_season_end_recap_gets_final_and_career_ppr(
+        self, mock_bot, mock_channel
+    ):
+        cog, ppr, league = self.setup_recap(mock_bot, upcoming_week=18)
+
+        await cog.build_matchup_digest(mock_channel, league)
+
+        text = self.sent_text(mock_channel)
+        assert text.index("**The League 2031**") < text.index("**PPR SEASON END**")
+        assert text.index("**PPR SEASON END**") < text.index(SEASON_END_MESSAGE)
+        ppr.season_end_section.assert_awaited_once_with(league)
+        ppr.recap_section.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_ppr_failure_leaves_the_section_out_and_tells_the_admin(
+        self, mock_bot, mock_channel
+    ):
+        cog, ppr, league = self.setup_recap(mock_bot, upcoming_week=6)
+        ppr.recap_section = AsyncMock(side_effect=PPRFetchError("-", "2031", "down"))
+
+        await cog.build_matchup_digest(mock_channel, league)
+
+        text = self.sent_text(mock_channel)
+        assert "Week 6" in text  # the recap still went out
+        assert "PPR" not in text
+        cog._notify_admin.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_without_the_ppr_cog_the_recap_is_unchanged(
+        self, mock_bot, mock_channel
+    ):
+        cog, ppr, league = self.setup_recap(
+            mock_bot, upcoming_week=6, ppr_cog_loaded=False
+        )
+
+        await cog.build_matchup_digest(mock_channel, league)
+
+        assert "PPR" not in self.sent_text(mock_channel)
+        ppr.recap_section.assert_not_awaited()

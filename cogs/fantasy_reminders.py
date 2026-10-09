@@ -8,6 +8,8 @@ import pytz
 import requests
 from discord.ext import commands
 import discord
+from cogs.ppr import PPR
+from core.errors import PPRFetchError, PPRSnapshotError
 from espn_api.football import League
 from espn_api.requests.espn_requests import (
     ESPNAccessDenied,
@@ -273,6 +275,7 @@ class FantasyReminders(commands.Cog):
         else:
             msg.append(NO_STREAKS_LABEL)
 
+        ppr_lines = await self._ppr_lines(league, last_week, is_final_week)
         if is_final_week:
             msg.append("")
             msg.append("=" * 40)
@@ -307,9 +310,11 @@ class FantasyReminders(commands.Cog):
                     )
                 )
 
+            msg += ppr_lines
             msg.append("")
             msg.append(SEASON_END_MESSAGE)
         else:
+            msg += ppr_lines
             # Preview
             msg.append("")
             msg.append(PREVIEW_HEADER_TEMPLATE.format(week=next_week))
@@ -326,6 +331,28 @@ class FantasyReminders(commands.Cog):
         if channel:
             for chunk in split_message("\n".join(msg)):
                 await channel.send(chunk)
+
+
+    async def _ppr_lines(
+        self, league: League, week: int, is_final_week: bool
+    ) -> list[str]:
+        """The recap's PPR lines: the week's ranking after a regular-season week,
+        final and career PPR in the season-end recap, nothing otherwise. A PPR
+        problem leaves them out (the admin is told) instead of stopping the recap."""
+        ppr = self.bot.get_cog("PPR")
+        if not isinstance(ppr, PPR):
+            return []
+        try:
+            if is_final_week:
+                return await ppr.season_end_section(league)
+            if week <= league.settings.reg_season_count:
+                return await ppr.recap_section(league, week)
+        except (PPRFetchError, PPRSnapshotError) as exc:
+            logger.warning("PPR left out of the recap: %s", exc)
+            await self._notify_admin(
+                f"[fantasy_reminders] PPR left out of the recap: {exc}"
+            )
+        return []
 
     @staticmethod
     def _too_late_for_tuesday_messages(now: datetime, reminder_time: datetime) -> bool:
