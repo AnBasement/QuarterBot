@@ -1,8 +1,11 @@
 """Tests for cogs/announcements.py."""
 
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
-from cogs.announcements import latest_release
+import pytest
+
+from cogs.announcements import Announcements, latest_release
 
 CHANGELOG = """# Changelog
 
@@ -63,3 +66,40 @@ def test_the_real_changelog_has_a_release():
     version, notes = release
     assert version.count(".") == 2
     assert notes.startswith("### ")
+
+
+# Remembering the announced version
+
+
+def cog_with_tab(cells):
+    """An Announcements cog whose state tab holds `cells` in A2."""
+    cog = Announcements(MagicMock())
+    tab = MagicMock()
+    tab.get.return_value = cells
+    cog._state_tab = AsyncMock(return_value=tab)
+    return cog, tab
+
+
+@pytest.mark.asyncio
+async def test_load_announced_gives_the_saved_version():
+    cog, _ = cog_with_tab([["1.2.0"]])
+
+    assert await cog._load_announced() == "1.2.0"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cells", [[], [[]], [[""]]])
+async def test_load_announced_is_none_for_an_empty_tab(cells):
+    """A new tab, or an empty A2: nothing has been announced yet."""
+    cog, _ = cog_with_tab(cells)
+
+    assert await cog._load_announced() is None
+
+
+@pytest.mark.asyncio
+async def test_save_announced_writes_the_version_to_a2():
+    cog, tab = cog_with_tab([])
+
+    await cog._save_announced("1.2.0")
+
+    tab.update.assert_called_once_with([["1.2.0"]], "A2")
