@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/AnBasement/quarterbot/actions/workflows/main.yml/badge.svg)](https://github.com/AnBasement/quarterbot/actions/workflows/main.yml) [![codecov](https://codecov.io/gh/AnBasement/quarterbot/branch/main/graph/badge.svg?token=YdZEPsANH4)](https://codecov.io/gh/AnBasement/quarterbot)
 
-A Discord bot for ESPN fantasy football leagues. It runs a weekly NFL pick'em game, tracks the league's power ranking (PPR) through Google Sheets, and posts reminders so nobody forgets their waivers.
+A Discord bot for ESPN fantasy football leagues. It runs a weekly NFL pick'em game, calculates the league's power ranking (PPR) from ESPN, and posts reminders so nobody forgets their waivers.
 
 QuarterBot was originally built for the private server of the fantasy league Fest i Vest, as a project to learn Python, using AI as an assistant. As I've used Render with UptimeRobot to host it, this README is based on that setup. If you use a different host or run it locally, setup won't be identical.
 
@@ -34,18 +34,21 @@ No code or environment variable changes needed: the bot checks for a matching em
 
 ### PPR
 
-PPR is the fantasy league's own "power ranking", a number that attempts to capture how well a team did over a season, based on average points per game, the highest and lowest single-game scores, and win rate, normalized against the rest of the league's results. This is heavily inspired/ripped off from the Oklahomiraqi League's OPR system. The formula itself lives in the Google Sheet's template, not in this codebase. The bot only reads the already-calculated value, so any league using this bot inherits the same formula automatically unless they edit their own copy of the spreadsheet.
+PPR is the fantasy league's own "power ranking". It attempts to capture how well a team did over a season, based on average points per game, the highest and lowest single-game scores, and win rate, normalized against the rest of the league's results. This is heavily inspired/ripped off from the Oklahomiraqi League's OPR system. The bot calculates it from your ESPN league's results, so it works for any league out of the box, it only requires the ESPN settings.
 
 The formula, in plain terms:
 
 1. **Raw score** = `(avg points per game × 6) + ((highest + lowest single-game score) × 2) + (win% × 200 × 2)`, all divided by 10
 2. **Final PPR** = that raw score, divided by the league's average raw score for the season
 
-Dividing by the league average in step 2 normalizes the number so `1.0` always means "exactly league average", which keeps PPR comparable from one season to the next even as overall scoring levels rise or fall.
+Dividing by the league average in step 2 normalizes the number so `1.0` always means "exactly league average", which keeps PPR comparable from one season to the next even with fluctuating overall scoring levels. Only regular-season games count (playoffs are left out), and only finished weeks, so PPR builds up over the season. By design it can vary a lot the first few weeks. A tie counts as half a win.
 
-- Optional: it needs its own league spreadsheet (see [step 3](#3-set-up-google-sheets-access)). The rest of the bot works without it
-- `!ppr` (admins only) reads each manager's PPR from the league spreadsheet and posts the ranking, with each team's change in PPR and rank since the last run
-- Each run saves a snapshot to a history tab, which the next run compares against
+- `!ppr` (admins only) posts this season's ranking, with each team's change in PPR and rank since the last run
+- Managers are followed by their ESPN account, so a renamed team keeps its history
+- The bot keeps two tabs in the pick'em spreadsheet, both created automatically if they do not exist:
+    - `PPR history`: every ranking `!ppr` has posted, which the change arrows compare against
+    - `PPR`: every season's numbers (games, wins, points per game, highest and lowest game, raw score and PPR), one row per manager per season, for anyone who wants to look up an old season or build their own spreadsheet on top of it
+
 
 ### Custom commands
 
@@ -87,10 +90,6 @@ A trivia cog is planned.
 - Support for single questions and 10-question rounds
 - Multiple categories, including a general NFL category and one per decade
 
-### PPR without manual updates
-
-Today the league spreadsheet's stats are typed in by hand every week. The plan is for the bot to fetch the league's results from ESPN, calculate PPR itself, and store the data in the spreadsheet, so no manual updates are needed.
-
 ## Getting started
 
 This guide takes you from nothing to a running bot on your own Discord server. It assumes you host the bot on [Render](https://render.com), but any host that can run Python works, including running it locally. If you're unfamiliar, set aside an hour or two the first time: most of it is clicking through Discord's, Google's and ESPN's websites.
@@ -100,7 +99,7 @@ If you get stuck, check [Troubleshooting](#troubleshooting) below, or open an is
 ### 1. What you need before you start
 
 - A Discord server where you're an administrator
-- A Google account (for the spreadsheets)
+- A Google account (for the spreadsheet)
 - An ESPN fantasy football league
 - A GitHub account (to copy the code) and a Render account (to run it). Both can be created as part of the steps below.
 
@@ -127,15 +126,15 @@ Then collect some IDs from Discord:
 
 ### 3. Set up Google Sheets access
 
-The bot reads and writes Google Sheets as a "service account": a robot Google user that belongs to you. You create it once, then share your spreadsheets with it like you would with a person. This is the fiddliest step, so take it slowly.
+The bot reads and writes Google Sheets as a "service account": a robot Google user that belongs to you. You create it once, then share your spreadsheet with it like you would with a person. This is the fiddliest step, so take it slowly.
 
 1. Go to the [Google Cloud Console](https://console.cloud.google.com/) and create a new project (free). Any name works.
-2. Go to **APIs & Services → Library**, and enable both **Google Sheets API** and **Google Drive API**. The bot needs Drive to find your spreadsheets by name.
+2. Go to **APIs & Services → Library**, and enable both **Google Sheets API** and **Google Drive API**. The bot needs Drive to find your spreadsheet by name.
 3. Go to **APIs & Services → Credentials → Create credentials → Service account**. Give it a name and click **Done** (the optional steps can be skipped).
 4. Open the new service account → **Keys → Add key → Create new key → JSON**. A file downloads. Rename it to `credentials.json`. Keep it secret: it gives access to every sheet shared with this account.
 5. On the service account's page, copy its email address (it ends in `.iam.gserviceaccount.com`). You'll share your sheets with it below.
 
-Now create the spreadsheets:
+Now create the spreadsheet:
 
 - **Pick'em spreadsheet (required):** the bot's own spreadsheet. Create a new, empty spreadsheet. In its first tab:
     1. Click the row number **2** on the left to select the whole row, then set Format → Number → **Plain text**. Do this before typing the IDs: Discord IDs are 18–19 digits long, and Sheets could otherwise round them, so the bot would never recognize anyone's picks.
@@ -143,9 +142,8 @@ Now create the spreadsheets:
     3. Row 2: `Discord ID` in `A2`, then each participant's Discord user ID below their name.
 
     Leave everything below row 2 empty. The bot writes each week's games there itself, and creates a `State` tab on its first start to remember which weeks it has handled. The transactions and player updates channels keep their own small tabs here too, also created automatically.
-- **League spreadsheet (optional, only for `!ppr`):** [make a copy of the template spreadsheet](https://docs.google.com/spreadsheets/d/1ySnHGbpJePAFt0-NZyx3gHuUbfC7duTcxcW3rSziMUU/edit?usp=sharing) (File → Make a copy). It has the tab structure and the PPR formula the bot expects. Skip it if you don't use PPR: the rest of the bot never opens it.
 
-**Share the spreadsheets** with the service account's email address (Share → paste the address → **Editor**). The bot finds sheets by their name, so give each one a name that no other sheet shared with the service account has. You'll put the names in `PICKEM_SHEET_NAME` and, if you made one, `LEAGUE_SHEET_NAME`.
+**Share the spreadsheet** with the service account's email address (Share → paste the address → **Editor**). The bot finds sheets by their name, so give it a name that no other sheet shared with the service account has. You'll put its name in `PICKEM_SHEET_NAME`.
 
 ### 4. Connect to ESPN
 
@@ -186,10 +184,8 @@ Settings are given to the bot as "environment variables": named values like `GAM
 | `GOOGLE_SHEETS_KEYFILE` | No (default `credentials.json`) | Path to the Google service account key |
 | `PORT` | No (default `8080`) | Port for the small keep-alive web server. Most hosts set this automatically, so you normally don't set it yourself |
 | `ESPN_LEAGUE_ID`, `ESPN_YEAR`, `ESPN_S2`, `ESPN_SWID` | Yes | Access to the ESPN Fantasy API for the league |
-| `PICKEM_SHEET_NAME`, `LEAGUE_SHEET_NAME` | No (defaults `Pick'em`, `League`) | Names of the pick'em spreadsheet (the bot keeps all its data there) and the league spreadsheet (only needed for `!ppr`). The bot finds them by name, so each must be unique among the sheets shared with its service account |
+| `PICKEM_SHEET_NAME` | No (default `Pick'em`) | Name of the pick'em spreadsheet. The bot finds it by name, so it must be unique among the sheets shared with its service account |
 | `WEEKLY_POINTS_SHEET_LABEL`, `SEASON_TOTAL_SHEET_LABEL`, `DRAW_SHEET_LABEL` | No (defaults `Weekly points`, `Season total`, `Tie`) | Labels the pick'em feature writes into its sheet and reads back later. If your sheet already contains rows with other labels, set these to match exactly, or season totals restart from zero |
-| `PPR_MANAGERS` | Yes, for `!ppr` | One entry per manager, separated by `;`: the manager's tab name in the league sheet, optionally followed by `=` and the team name to show, e.g. `Alice=Aces;Bob=Bombers`. Update when managers join/leave or rename their team |
-| `PPR_HISTORY_SHEET_NAME` | No (default `PPR History`) | Name of the Sheets tab that stores PPR snapshot history |
 | `FANTASY_FINAL_WEEK` | No (default `17`) | Final week of the league's ESPN fantasy season (regular + playoff weeks); check your own league's ESPN settings |
 | `TRANSACTIONS_CHANNEL_ID` | No | Channel for league moves (adds, drops, waiver claims, trades). Leave it out to switch the feature off |
 | `PLAYER_UPDATES_CHANNEL_ID` | No | Channel for NFL player updates (injury updates, mid-game injuries, cleared to play). Leave it out to switch the feature off |
