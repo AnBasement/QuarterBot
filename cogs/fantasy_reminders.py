@@ -332,7 +332,6 @@ class FantasyReminders(commands.Cog):
             for chunk in split_message("\n".join(msg)):
                 await channel.send(chunk)
 
-
     async def _ppr_lines(
         self, league: League, week: int, is_final_week: bool
     ) -> list[str]:
