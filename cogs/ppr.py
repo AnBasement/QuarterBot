@@ -136,6 +136,17 @@ def ranking_lines(
     return lines
 
 
+def career_stats(
+    finished: list[dict[str, Any]], owner: str
+) -> tuple[float, int, float] | None:
+    """A manager's career over finished seasons: (average PPR, number of
+    seasons, career value), or None if they have no finished season."""
+    pprs = [row["ppr"] for row in finished if row["owner"] == owner]
+    if not pprs:
+        return None
+    return sum(pprs) / len(pprs), len(pprs), sum(ppr - 1 for ppr in pprs)
+
+
 def rank_change(old_rank: int, new_rank: int) -> str:
     """The arrow shown next to a team: "=", "⇧2" (up two places) or "⇩1"."""
     if old_rank == new_rank:

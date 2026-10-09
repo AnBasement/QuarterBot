@@ -55,6 +55,26 @@ PPR_NO_DATA_MESSAGE = _message(
 PPR_UPDATE_MESSAGE = _message(
     "PPR_UPDATE_MESSAGE", "@everyone, this week's PPR update:\n```\n{rankings}\n```"
 )
+PPR_RECAP_HEADER_TEMPLATE = _message(
+    "PPR_RECAP_HEADER_TEMPLATE", "**PPR after week {week}:**"
+)
+PPR_FINAL_HEADER_TEMPLATE = _message(
+    "PPR_FINAL_HEADER_TEMPLATE", "**Final PPR {year}:**"
+)
+PPR_CAREER_HEADER_LABEL = _message("PPR_CAREER_HEADER_LABEL", "**Career PPR:**")
+PPR_CAREER_LINE_TEMPLATE = _message(
+    "PPR_CAREER_LINE_TEMPLATE",
+    "{rank}. {team}: {average:.3f} ({change:+.3f}) {arrow} over {seasons} seasons",
+)
+PPR_CAREER_FIRST_LINE_TEMPLATE = _message(
+    "PPR_CAREER_FIRST_LINE_TEMPLATE", "{rank}. {team}: {average:.3f} over 1 season"
+)
+PPR_CAREER_VALUE_TEMPLATE = _message(
+    "PPR_CAREER_VALUE_TEMPLATE", "Career value: {value:+.3f} ({added:+.3f} this season)"
+)
+PPR_CAREER_FIRST_VALUE_TEMPLATE = _message(
+    "PPR_CAREER_FIRST_VALUE_TEMPLATE", "Career value: {value:+.3f}"
+)
 
 # Fantasy reminders (cogs/fantasy_reminders.py)
 WAIVER_REMINDER_MESSAGE = _message(
