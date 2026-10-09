@@ -1,7 +1,7 @@
 """Tests for cogs/player_updates.py."""
 
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -19,7 +19,7 @@ from cogs.player_updates import (
     ROSTER_REFRESH_SECONDS,
     PlayerUpdates,
     advance_marker,
-    format_update,
+    build_update,
     is_injury_news,
     is_status_only,
     new_reports,
@@ -196,33 +196,52 @@ def test_player_id_is_none_without_a_link():
     assert player_id(report(links=[])) is None
 
 
-# format_update
+# build_update
 
 
-def test_format_update_with_a_player_link():
-    message = format_update(report("Questionable", "Sweat (knee) is questionable."))
-
-    assert message == (
-        "**Montez Sweat** (CHI, DE): Questionable\n"
-        "Sweat (knee) is questionable.\n"
-        f"<{PLAYER_PAGE}>"
+def test_build_update_makes_an_embed_with_a_linked_title():
+    ping, embed = build_update(
+        report(
+            "Questionable", "Sweat (knee) is questionable.", date="2026-10-04T15:43Z"
+        )
     )
 
-
-def test_format_update_links_the_injuries_page_without_a_player_link():
-    message = format_update(report(links=[]))
-
-    assert message.endswith(f"<{INJURIES_PAGE}>")
-
-
-def test_format_update_pings_the_owner():
-    message = format_update(report(), owner=123456789)
-
-    assert message.endswith(f"<{PLAYER_PAGE}>\n<@123456789>")
+    assert embed.title == "Montez Sweat (CHI, DE)"
+    assert embed.url == PLAYER_PAGE
+    assert embed.description == "**Questionable**\nSweat (knee) is questionable."
+    assert embed.timestamp == datetime(2026, 10, 4, 15, 43, tzinfo=timezone.utc)
+    assert ping is None
 
 
-def test_format_update_without_an_owner_has_no_ping():
-    assert "<@" not in format_update(report())
+def test_build_update_links_the_injuries_page_without_a_player_link():
+    _, embed = build_update(report(links=[]))
+
+    assert embed.url == INJURIES_PAGE
+
+
+@pytest.mark.parametrize(
+    "status, colour",
+    [
+        ("Active", discord.Colour.green()),
+        ("Questionable", discord.Colour.gold()),
+        ("Doubtful", discord.Colour.orange()),
+        ("Out", discord.Colour.red()),
+        ("Injured Reserve", discord.Colour.dark_red()),
+        ("Suspended", discord.Colour.light_grey()),  # not in the list: grey
+    ],
+)
+def test_build_update_colours_the_embed_by_status(status, colour):
+    _, embed = build_update(report(status, "Sweat (knee) ..."))
+
+    assert embed.colour == colour
+
+
+def test_build_update_pings_the_owner_outside_the_embed():
+    """Discord doesn't notify mentions inside an embed."""
+    ping, embed = build_update(report(), owner=123456789)
+
+    assert ping == "<@123456789>"
+    assert "<@" not in (embed.description or "")
 
 
 # new_reports and advance_marker
@@ -329,8 +348,12 @@ def make_cog(monkeypatch, reports, last_minute=MINUTE, ids_at_last_minute=None):
     return cog, channel
 
 
-def sent_messages(channel):
-    return [call.args[0] for call in channel.send.await_args_list]
+def sent_updates(channel):
+    """Each update sent, as (ping text or None, embed)."""
+    return [
+        (call.kwargs.get("content"), call.kwargs["embed"])
+        for call in channel.send.await_args_list
+    ]
 
 
 def injury(report_id, date, comment="Sweat (knee) is questionable.", **kwargs):
@@ -364,9 +387,9 @@ async def test_new_injury_reports_are_posted_oldest_first_and_saved(monkeypatch)
 
     await cog.check_once()
 
-    sent = sent_messages(channel)
+    sent = sent_updates(channel)
     assert len(sent) == 2
-    assert "doubtful" in sent[0] and "out" in sent[1]
+    assert "doubtful" in sent[0][1].description and "out" in sent[1][1].description
     assert cog.saved == [(LATER, {"newest"})]
 
 
@@ -430,7 +453,7 @@ async def test_a_rostered_players_report_pings_the_manager(monkeypatch):
 
     await cog.check_once()
 
-    assert sent_messages(channel)[0].endswith("\n<@999>")
+    assert sent_updates(channel)[0][0] == "<@999>"
 
 
 @pytest.mark.asyncio
@@ -441,7 +464,7 @@ async def test_an_unrostered_players_report_pings_nobody(monkeypatch):
 
     await cog.check_once()
 
-    assert "<@" not in sent_messages(channel)[0]
+    assert sent_updates(channel)[0][0] is None
 
 
 def team(team_id, *player_ids):
@@ -501,7 +524,7 @@ async def test_without_discord_ids_nobody_is_pinged(monkeypatch):
 
     assert cog.owners == {}
     assert calls == []  # no reason to ask ESPN
-    assert "<@" not in sent_messages(channel)[0]
+    assert sent_updates(channel)[0][0] is None
 
 
 @pytest.mark.asyncio
@@ -515,8 +538,8 @@ async def test_report_is_posted_without_ping_when_the_league_fails(monkeypatch):
 
     await cog.check_once()
 
-    sent = sent_messages(channel)
-    assert len(sent) == 1 and "<@" not in sent[0]
+    sent = sent_updates(channel)
+    assert len(sent) == 1 and sent[0][0] is None
     cog._notify_admin.assert_awaited_once()
 
 

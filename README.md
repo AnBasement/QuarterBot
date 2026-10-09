@@ -71,7 +71,7 @@ Posts every add, drop, waiver claim and completed trade in the ESPN league to it
 
 ### Player updates
 
-Posts player updates (injury statuses, mid-game reports, cleared to play) from ESPN's public injury reports to a specified channel with links to the relevant player's page on ESPN. Checks every minute on game days and every five minutes on non-game days. Does not post coach's decision updates, game stat lines, plain inactive-list entries or ESPN's bare status updates. Pings league managers if the player is on their team (requires `discord_ids.json` and ESPN league settings). Keeps track of what has been posted by using the `Player updates` tab in the pick'em spreadsheet. Entirely optional: set `PLAYER_UPDATES_CHANNEL_ID` to turn on. Message text is configurable with `PLAYER_UPDATE_TEMPLATE`.
+Posts player updates (injury statuses, mid-game reports, cleared to play) from ESPN's public injury reports to a specified channel, each as a box coloured by status with the player's name linking to their ESPN page. Checks every minute on game days and every five minutes on non-game days. Does not post coach's decision updates, game stat lines, plain inactive-list entries or ESPN's bare status updates. Pings league managers if the player is on their team (requires `discord_ids.json` and ESPN league settings). Keeps track of what has been posted by using the `Player updates` tab in the pick'em spreadsheet. Entirely optional: set `PLAYER_UPDATES_CHANNEL_ID` to turn on.
 
 ### Weekly recap
 
@@ -117,7 +117,7 @@ A Discord bot is an "application" you create on Discord's developer site, then i
     - Turn on **Message Content Intent** and **Server Members Intent**. "Intents" are permissions for what the bot is allowed to see. Without these two it starts, but ignores every command.
 3. Open **OAuth2 → URL Generator**:
     - Under **Scopes**, tick `bot`. A **Bot Permissions** box appears below it.
-    - Tick **View Channels**, **Send Messages**, **Read Message History**, **Add Reactions** and **Mention Everyone**.
+    - Tick **View Channels**, **Send Messages**, **Embed Links**, **Read Message History**, **Add Reactions** and **Mention Everyone**.
     - Open the generated URL at the bottom of the page, pick your server and click **Authorize**. The bot shows up in the member list, offline until you start it.
 
 Then collect some IDs from Discord:
