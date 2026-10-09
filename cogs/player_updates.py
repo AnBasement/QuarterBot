@@ -2,6 +2,7 @@
 
 import re
 from core.utils.espn_site import parse_espn_date
+import discord
 from typing import Any
 import asyncio
 import logging
@@ -18,7 +19,6 @@ from core.utils.espn_helpers import get_league
 from core.utils.espn_site import fetch_json
 from data.channel_ids import ADMIN_CHANNEL_ID, PLAYER_UPDATES_CHANNEL_ID
 from data.discord_ids import load_discord_ids
-from data.messages import PLAYER_UPDATE_TEMPLATE
 from data.config import PICKEM_SHEET_NAME
 from espn_api.requests.espn_requests import (
     ESPNAccessDenied,
@@ -32,6 +32,14 @@ logger = logging.getLogger(__name__)
 ERROR_BACKOFF_SECONDS = 600
 INJURIES_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries"
 INJURIES_PAGE = "https://www.espn.com/nfl/injuries"  # fallback if no player page
+# The coloured bar on the left of each update, by status.
+STATUS_COLOURS = {
+    "Active": discord.Colour.green(),
+    "Questionable": discord.Colour.gold(),
+    "Doubtful": discord.Colour.orange(),
+    "Out": discord.Colour.red(),
+    "Injured Reserve": discord.Colour.dark_red(),
+}
 INJURY_STATUSES = {"Questionable", "Doubtful", "Out", "Injured Reserve"}
 # ESPN's reports write an injury right after the player's name: "Sweat (groin)
 # is active...". Up to four words of the player's name, then the brackets.
@@ -89,9 +97,12 @@ def player_id(report: dict[str, Any]) -> int | None:
     return None
 
 
-def format_update(report: dict[str, Any], owner: int | None = None) -> str:
-    """The Discord message for one report, with a ping for `owner` (a Discord
-    user ID) if the player is on a fantasy team."""
+def build_update(
+    report: dict[str, Any], owner: int | None = None
+) -> tuple[str | None, discord.Embed]:
+    """The Discord message for one report: the ping for `owner` (a Discord user
+    ID) as text, or None if the player isn't on a fantasy team, and the report
+    as an embed, coloured by status."""
     athlete = report.get("athlete", {})
     link = next(
         (
@@ -101,17 +112,20 @@ def format_update(report: dict[str, Any], owner: int | None = None) -> str:
         ),
         INJURIES_PAGE,
     )
-    message = PLAYER_UPDATE_TEMPLATE.format(
-        player=athlete.get("displayName", "?"),
-        team=athlete.get("team", {}).get("abbreviation", "?"),
-        position=athlete.get("position", {}).get("abbreviation", "?"),
-        status=report.get("status", "?"),
-        comment=report.get("shortComment", ""),
-        link=link,
+    player = athlete.get("displayName", "?")
+    team = athlete.get("team", {}).get("abbreviation", "?")
+    position = athlete.get("position", {}).get("abbreviation", "?")
+    status = report.get("status", "?")
+    comment = report.get("shortComment", "")
+    embed = discord.Embed(
+        title=f"{player} ({team}, {position})",
+        url=link,
+        description=f"**{status}**\n{comment}",
+        colour=STATUS_COLOURS.get(status, discord.Colour.light_grey()),
+        timestamp=parse_espn_date(report["date"]),
     )
-    if owner is not None:
-        message += f"\n<@{owner}>"
-    return message
+    ping = f"<@{owner}>" if owner is not None else None
+    return ping, embed
 
 
 def new_reports(
@@ -292,7 +306,8 @@ class PlayerUpdates(commands.Cog):
                 if is_injury_news(report):
                     pid = player_id(report)
                     owner = self.owners.get(pid) if pid is not None else None
-                    await channel.send(format_update(report, owner))
+                    ping, embed = build_update(report, owner)
+                    await channel.send(content=ping, embed=embed)
                 self.last_minute, self.ids_at_last_minute = advance_marker(
                     self.last_minute, self.ids_at_last_minute, report
                 )
