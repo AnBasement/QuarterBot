@@ -6,6 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 
 ## [Unreleased]
 
+## [1.2.0] - 09-10-2026
+
 ### Added
 - A player updates channel, fetching NFL injury and status reports from ESPN and posting to a specified channel as they come in, pinging league managers if the player is on their fantasy team. Activated with `PLAYER_UPDATES_CHANNEL_ID`, posted as embeds coloured by status
 - PPR is posted as part of the weekly recap. The ranking with changes since last week after every regular-season week, and the final and career PPR (average over finished seasons, number of seasons, career value) in the season-end recap. Career PPR shows how the season just ended moved it (change and rank arrows) and what it added to career value. The headings and career lines are configurable (`PPR_RECAP_HEADER_TEMPLATE`, `PPR_FINAL_HEADER_TEMPLATE`, `PPR_CAREER_HEADER_LABEL`, `PPR_CAREER_LINE_TEMPLATE`, `PPR_CAREER_FIRST_LINE_TEMPLATE`, `PPR_CAREER_VALUE_TEMPLATE`, `PPR_CAREER_FIRST_VALUE_TEMPLATE`)
