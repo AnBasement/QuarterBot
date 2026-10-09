@@ -160,11 +160,13 @@ class PPR(commands.Cog):
             ) from exc
 
     async def _seasons(
-        self,
+        self, league: Any | None = None
     ) -> tuple[Any, list[dict[str, Any]], list[dict[str, Any]]]:
         """The current league, this season's rows, and every finished season's
-        rows (loaded from ESPN the first time, remembered after that)."""
-        league = await self._league()
+        rows (loaded from ESPN the first time, remembered after that). Pass an already
+        loaded current league to skip fetching it again."""
+        if league is None:
+            league = await self._league()
         for year in league.previousSeasons:
             if year not in self.finished:
                 self.finished[year] = season_rows(await self._league(year))

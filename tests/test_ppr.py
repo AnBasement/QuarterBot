@@ -214,6 +214,24 @@ async def test_a_new_finished_season_is_loaded_when_it_appears(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_loaded_league_is_reused_not_fetched_again(monkeypatch):
+    """The recap has already loaded this season's league: only the finished
+    seasons the cog hasn't seen yet should be fetched."""
+    asked = fake_espn(monkeypatch)
+    already_loaded = league([team([100, 120, 80], ["W", "L", "W"])], year=2026)
+    already_loaded.previousSeasons = [2025]
+    cog = PPR(MagicMock())
+
+    returned, current, finished = await cog._seasons(already_loaded)
+
+    assert None not in asked  # the current season wasn't fetched
+    assert asked == [2025]
+    assert returned is already_loaded
+    assert [row["season"] for row in current] == [2026]
+    assert [row["season"] for row in finished] == [2025]
+
+
+@pytest.mark.asyncio
 async def test_espn_problems_become_ppr_fetch_errors(monkeypatch):
     fake_espn(monkeypatch, error=requests.exceptions.ConnectionError("ESPN down"))
     cog = PPR(MagicMock())
