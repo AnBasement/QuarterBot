@@ -131,6 +131,20 @@ def test_on_with_the_channel_setting(monkeypatch):
     bot.loop.create_task.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_the_bot_can_load_the_cog(monkeypatch):
+    """core/bot.py loads cogs by module name, which needs a setup() function:
+    without it the cog never loads and nothing is ever announced."""
+    monkeypatch.setattr(announcements, "CHANGELOG_CHANNEL_ID", None)
+    bot = MagicMock()
+    bot.add_cog = AsyncMock()
+
+    await announcements.setup(bot)
+
+    added = bot.add_cog.await_args.args[0]
+    assert isinstance(added, Announcements)
+
+
 # Announcing
 
 

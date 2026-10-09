@@ -131,3 +131,8 @@ class Announcements(commands.Cog):
                 f"[announcements] Couldn't announce the new version: {exc}. "
                 "It's tried again the next time the bot starts."
             )
+
+
+async def setup(bot: commands.Bot) -> None:
+    """Loads the cog (called by discord.py's load_extension)."""
+    await bot.add_cog(Announcements(bot))
