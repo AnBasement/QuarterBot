@@ -357,8 +357,7 @@ class PPR(commands.Cog):
             for rank, row in enumerate(ranked, start=1)
         ]
 
-        regular_weeks = league.settings.reg_season_count
-        season_over = all(row["games"] == regular_weeks for row in current)
+        season_over = league.scoringPeriodId > league.settings.reg_season_count
         after = finished + current if season_over else finished
         managers = [(owner_id(team), team.team_name) for team in league.teams]
         lines += ["", PPR_CAREER_HEADER_LABEL]

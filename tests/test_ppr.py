@@ -651,10 +651,14 @@ def test_career_lines_leave_out_a_manager_without_finished_seasons():
     assert not any("Bombers" in line for line in lines)
 
 
-def season_end_league(regular_weeks=3, year=2025):
-    """A league whose teams are Aces ({OWNER-1}) and Bombers ({OWNER-2})."""
+def season_end_league(regular_weeks=3, year=2025, scoring_period=None):
+    """A league whose teams are Aces ({OWNER-1}) and Bombers ({OWNER-2}). By
+    default ESPN is past the regular season, as in a real season-end recap."""
+    if scoring_period is None:
+        scoring_period = regular_weeks + 3
     return SimpleNamespace(
         year=year,
+        scoringPeriodId=scoring_period,
         teams=[
             team([], [], team_id=1, name="Aces"),
             team([], [], team_id=2, name="Bombers"),
@@ -695,14 +699,32 @@ async def test_season_end_shows_final_ppr_without_arrows_then_career():
 
 @pytest.mark.asyncio
 async def test_season_end_career_waits_until_the_regular_season_is_over():
+    """Called mid-season, the season isn't part of anyone's career yet."""
     current = [{**season("{OWNER-1}", 2025, 1.1, games=2), "team": "Aces"}]
     finished = [season("{OWNER-1}", 2024, 0.9)]
     cog = cog_with_seasons(current, finished)
 
-    lines = await cog.season_end_section(season_end_league())
+    lines = await cog.season_end_section(season_end_league(scoring_period=3))
 
     career = lines[lines.index("**Career PPR:**") + 1]
     assert career.startswith("1. Aces: 0.900")  # 2024 only
+
+
+@pytest.mark.asyncio
+async def test_season_end_counts_a_season_with_a_bye():
+    """A team with fewer games (a bye, a voided week) still gets the season
+    counted once ESPN is past the regular season."""
+    current = [
+        {**season("{OWNER-1}", 2025, 1.1, games=3), "team": "Aces"},
+        {**season("{OWNER-2}", 2025, 0.9, games=2), "team": "Bombers"},
+    ]
+    finished = [season("{OWNER-1}", 2024, 0.9), season("{OWNER-2}", 2024, 1.1)]
+    cog = cog_with_seasons(current, finished)
+
+    lines = await cog.season_end_section(season_end_league())
+
+    career = lines[lines.index("**Career PPR:**") + 1 :]
+    assert sum("over 2 seasons" in line for line in career) == 2
 
 
 @pytest.mark.asyncio
