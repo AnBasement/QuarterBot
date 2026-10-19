@@ -11,6 +11,11 @@ LEAGUE_NAME = os.getenv("LEAGUE_NAME", "The League")
 # Spreadsheets are found by name and must be shared with the service account.
 PICKEM_SHEET_NAME = os.getenv("PICKEM_SHEET_NAME", "Pick'em")
 
+# Only post player updates for positions the league has a lineup slot for
+PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS = os.getenv(
+    "PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS", "false"
+).strip().lower() in {"true", "1", "yes"}
+
 # Written into the pick'em sheet and searched for later, so they must match
 # what's already in the sheet (or season totals restart from zero).
 WEEKLY_POINTS_SHEET_LABEL = os.getenv("WEEKLY_POINTS_SHEET_LABEL", "Weekly points")
