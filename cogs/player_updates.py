@@ -19,7 +19,7 @@ from core.utils.espn_helpers import get_league
 from core.utils.espn_site import fetch_json
 from data.channel_ids import ADMIN_CHANNEL_ID, PLAYER_UPDATES_CHANNEL_ID
 from data.discord_ids import load_discord_ids
-from data.config import PICKEM_SHEET_NAME
+from data.config import PICKEM_SHEET_NAME, PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS
 from espn_api.requests.espn_requests import (
     ESPNAccessDenied,
     ESPNInvalidLeague,
@@ -57,6 +57,35 @@ PLAYER_ID_IN_LINK = re.compile(r"/id/(\d+)")  # e.g. ".../player/_/id/4363538/..
 ROSTER_REFRESH_SECONDS = 1800  # rosters change with pickups and trades
 STATE_TAB = "Player updates"
 
+# The lineup slots whose label isn't simply the injury feed's own: a different
+# label (K is PK in the feed) or a combined slot (RB/WR/TE). Any slot not included
+# (QB, TE, DT, ...) is already identical in the feed. FB is listed with RB because
+# ESPN registers fullbacks as running backs.
+LINEUP_SLOT_POSITIONS: dict[str, set[str]] = {
+    "TQB": {"QB"},
+    "RB": {"RB", "FB"},
+    "RB/WR": {"RB", "FB", "WR"},
+    "WR/TE": {"WR", "TE"},
+    "RB/WR/TE": {"RB", "FB", "WR", "TE"},
+    "OP": {"QB", "RB", "FB", "WR", "TE"},  # Superflex
+    "K": {"PK"},
+    "DL": {"DE", "DT"},
+    "DB": {"CB", "S"},
+    "DP": {"DE", "DT", "LB", "CB", "S"},
+}
+# Lineup slots that never hold a player the injury feed reports on.
+NON_PLAYER_SLOTS = {"D/ST", "HC", "BE", "IR", "ER", "Rookie", ""}
+
+
+def league_positions(slot_counts: dict[str, int]) -> set[str] | None:
+    """The injury feed positions the league has a lineup slot for, or None if
+    that can't be worked out (then every position is posted)."""
+    positions: set[str] = set()
+    for slot, count in slot_counts.items():
+        if count > 0 and slot not in NON_PLAYER_SLOTS:
+            positions |= LINEUP_SLOT_POSITIONS.get(slot, {slot})
+    return positions or None
+
 
 def is_status_only(report: dict[str, Any]) -> bool:
     """Whether a report's comment is empty or just repeats its status
@@ -85,6 +114,17 @@ def is_injury_news(report: dict[str, Any]) -> bool:
     if match is None and INACTIVE.search(comment):
         return False  # a plain "inactive": no injury named
     return report.get("status") in INJURY_STATUSES or match is not None
+
+
+def is_wanted_position(report: dict[str, Any], positions: set[str] | None) -> bool:
+    """Whether a report is for a position worth posting. Everything passes if
+    `positions` is None (filter off or unknown), and so does a report with no
+    position."""
+    if positions is None:
+        return True
+    athlete = report.get("athlete") or {}
+    position = (athlete.get("position") or {}).get("abbreviation")
+    return not position or position in positions
 
 
 def player_id(report: dict[str, Any]) -> int | None:
@@ -171,8 +211,9 @@ class PlayerUpdates(commands.Cog):
         self._failing = False
         self.task: asyncio.Task[None] | None = None
         self.owners: dict[int, int] = {}
-        self._owners_loaded_at: float | None = None
-        self._owners_failing = False
+        self.positions: set[str] | None = None
+        self._league_loaded_at: float | None = None
+        self._league_failing = False
         if PLAYER_UPDATES_CHANNEL_ID is None:
             logger.info("PLAYER_UPDATES_CHANNEL_ID not set; player update feature off.")
         else:
@@ -203,22 +244,28 @@ class PlayerUpdates(commands.Cog):
             ["last_minute", "ids_at_last_minute"],
         )
 
-    async def _refresh_owners(self) -> None:
-        """Reloads which manager has which player, at most every 30 minutes.
-        Never raises: without discord_ids.json there's nobody to ping, and if
-        ESPN fails, the reports go out without pings."""
+    async def _refresh_league_data(self) -> None:
+        """Reloads who owns which player, and the positions the league starts if
+        PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS is on, at most every 30 minutes.
+
+        Never raises. ESPN is only asked when there's something to use it for:
+        a discord_ids.json to ping from, or the position filter being on. If
+        ESPN fails, the last owners and positions are kept; if nothing was ever
+        loaded, nobody is pinged and every position is posted."""
         now = time.monotonic()
         if (
-            self._owners_loaded_at is not None
-            and now - self._owners_loaded_at < ROSTER_REFRESH_SECONDS
+            self._league_loaded_at is not None
+            and now - self._league_loaded_at < ROSTER_REFRESH_SECONDS
         ):
             return
-        self._owners_loaded_at = now
+        self._league_loaded_at = now
         try:
             discord_ids = load_discord_ids()
         except (FileNotFoundError, ValueError):
+            discord_ids = {}  # broken or no file: nobody to ping
+        if not discord_ids and not PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS:
             self.owners = {}
-            return  # broken or no file: no pings
+            return  # nothing to do with the league
         try:
             league = await asyncio.to_thread(get_league)
         except (
@@ -228,21 +275,27 @@ class PlayerUpdates(commands.Cog):
             ESPNUnknownError,
             ValueError,
         ) as exc:
-            logger.warning("Couldn't load fantasy rosters for player pings: %s", exc)
-            if not self._owners_failing:
-                self._owners_failing = True
+            logger.warning("Couldn't load the fantasy league: %s", exc)
+            if not self._league_failing:
+                self._league_failing = True
+                kept = "managers"
+                if PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS:
+                    kept = "managers and positions"
                 await self._notify_admin(
-                    f"[player-updates] Couldn't load the fantasy rosters, reports "
-                    f"are posted without pings: {exc}"
+                    f"[player-updates] Couldn't load the fantasy league. Reports go "
+                    f"out with the last known {kept} (without them if none has "
+                    f"loaded yet): {exc}"
                 )
-            return  # keep the last list
-        self._owners_failing = False
+            return  # keep the last owners and positions
+        self._league_failing = False
         self.owners = {
             player.playerId: discord_ids[team.team_id]
             for team in league.teams
             if team.team_id in discord_ids
             for player in team.roster
         }
+        if PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS:
+            self.positions = league_positions(league.settings.position_slot_counts)
 
     async def _load_marker(self) -> None:
         """Reads the saved marker, which is the newest minute handled and the player IDs
@@ -277,7 +330,7 @@ class PlayerUpdates(commands.Cog):
 
         if self.last_minute is None:
             await self._load_marker()
-        await self._refresh_owners()
+        await self._refresh_league_data()
         data = await fetch_json(INJURIES_URL)
         reports = [
             r for team in data.get("injuries", []) for r in team.get("injuries", [])
@@ -303,7 +356,9 @@ class PlayerUpdates(commands.Cog):
             for report in new_reports(
                 reports, self.last_minute, self.ids_at_last_minute
             ):
-                if is_injury_news(report):
+                if is_injury_news(report) and is_wanted_position(
+                    report, self.positions
+                ):
                     pid = player_id(report)
                     owner = self.owners.get(pid) if pid is not None else None
                     ping, embed = build_update(report, owner)
