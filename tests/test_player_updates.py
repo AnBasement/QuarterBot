@@ -334,6 +334,7 @@ def make_cog(monkeypatch, reports, last_minute=MINUTE, ids_at_last_minute=None):
     cog.ids_at_last_minute = ids_at_last_minute or set()
     cog._failing = False
     cog.owners = {}
+    cog.positions = None
     cog._league_loaded_at = None
     cog._league_failing = False
     cog._notify_admin = AsyncMock()
