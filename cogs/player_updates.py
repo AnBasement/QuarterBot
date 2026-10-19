@@ -278,10 +278,13 @@ class PlayerUpdates(commands.Cog):
             logger.warning("Couldn't load the fantasy league: %s", exc)
             if not self._league_failing:
                 self._league_failing = True
+                kept = "managers"
+                if PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS:
+                    kept = "managers and positions"
                 await self._notify_admin(
-                    f"[player-updates] Couldn't load the fantasy league, reports "
-                    f"are posted without pings, and with the last known positions "
-                    f"(all of them if there are none): {exc}"
+                    f"[player-updates] Couldn't load the fantasy league. Reports go "
+                    f"out with the last known {kept} (without them if none has "
+                    f"loaded yet): {exc}"
                 )
             return  # keep the last owners and positions
         self._league_failing = False

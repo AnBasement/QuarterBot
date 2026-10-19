@@ -807,6 +807,26 @@ async def test_a_league_failure_at_startup_posts_every_position(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("filter_on", [False, True])
+async def test_the_league_warning_only_mentions_positions_with_the_filter_on(
+    monkeypatch, filter_on
+):
+    monkeypatch.setattr(
+        player_updates, "PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS", filter_on
+    )
+    fake_league(
+        monkeypatch, {1: 111}, error=requests.exceptions.ConnectionError("down")
+    )
+    cog, _ = make_cog(monkeypatch, [])
+    real_refresh_league_data(cog)
+
+    await cog._refresh_league_data()
+
+    message = cog._notify_admin.await_args.args[0]
+    assert ("positions" in message) == filter_on
+
+
+@pytest.mark.asyncio
 async def test_with_the_setting_on_a_defender_is_not_posted(monkeypatch):
     """The whole way: league settings in, an unwanted position out."""
     monkeypatch.setattr(player_updates, "PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS", True)

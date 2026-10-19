@@ -10,7 +10,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 - `PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS`: when set to `true`, player updates are only posted for positions your ESPN league has a lineup slot for. As an example, a league with no defensive players starting won't see any updates for them. Setting is off by default, and requires the ESPN settings. If the league can't be loaded, every position is posted
 
 ### Changed
-- The player updates warning in the admin channel about not being able to load the fantasy rosters now says "league" and mentions positions
+- The player updates warning in the admin channel about not being able to load the fantasy league now says what is kept in use (the last known managers, and positions if the filter is on)
 
 ## [1.2.0] - 09-10-2026
 
