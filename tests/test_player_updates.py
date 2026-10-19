@@ -334,10 +334,10 @@ def make_cog(monkeypatch, reports, last_minute=MINUTE, ids_at_last_minute=None):
     cog.ids_at_last_minute = ids_at_last_minute or set()
     cog._failing = False
     cog.owners = {}
-    cog._owners_loaded_at = None
-    cog._owners_failing = False
+    cog._league_loaded_at = None
+    cog._league_failing = False
     cog._notify_admin = AsyncMock()
-    cog._refresh_owners = AsyncMock()
+    cog._refresh_league_data = AsyncMock()
     cog._load_marker = AsyncMock()
     cog.saved = []
 
@@ -494,9 +494,9 @@ def fake_league(monkeypatch, discord_ids, teams=None, error=None):
     return calls
 
 
-def real_refresh_owners(cog):
-    """make_cog fakes _refresh_owners; these tests need the real one."""
-    cog._refresh_owners = PlayerUpdates._refresh_owners.__get__(cog)
+def real_refresh_league_data(cog):
+    """make_cog fakes _refresh_league_data; these tests need the real one."""
+    cog._refresh_league_data = PlayerUpdates._refresh_league_data.__get__(cog)
 
 
 @pytest.mark.asyncio
@@ -507,9 +507,9 @@ async def test_owners_map_each_rostered_player_to_the_manager(monkeypatch):
         teams=[team(1, SWEAT_ID, 22), team(2, 33)],
     )
     cog, _ = make_cog(monkeypatch, [])
-    real_refresh_owners(cog)
+    real_refresh_league_data(cog)
 
-    await cog._refresh_owners()
+    await cog._refresh_league_data()
 
     assert cog.owners == {SWEAT_ID: 111, 22: 111}
 
@@ -518,7 +518,7 @@ async def test_owners_map_each_rostered_player_to_the_manager(monkeypatch):
 async def test_without_discord_ids_nobody_is_pinged(monkeypatch):
     calls = fake_league(monkeypatch, None, teams=[team(1, SWEAT_ID)])
     cog, channel = make_cog(monkeypatch, [injury("new", LATER)])
-    real_refresh_owners(cog)
+    real_refresh_league_data(cog)
 
     await cog.check_once()
 
@@ -534,7 +534,7 @@ async def test_report_is_posted_without_ping_when_the_league_fails(monkeypatch):
         monkeypatch, {1: 111}, error=requests.exceptions.ConnectionError("down")
     )
     cog, channel = make_cog(monkeypatch, [injury("new", LATER)])
-    real_refresh_owners(cog)
+    real_refresh_league_data(cog)
 
     await cog.check_once()
 
@@ -549,12 +549,12 @@ async def test_league_failure_tells_admin_once_and_keeps_the_old_list(monkeypatc
         monkeypatch, {1: 111}, error=requests.exceptions.ConnectionError("down")
     )
     cog, _ = make_cog(monkeypatch, [])
-    real_refresh_owners(cog)
+    real_refresh_league_data(cog)
     cog.owners = {SWEAT_ID: 111}  # loaded earlier
 
-    await cog._refresh_owners()
-    cog._owners_loaded_at -= ROSTER_REFRESH_SECONDS + 1  # half an hour later
-    await cog._refresh_owners()
+    await cog._refresh_league_data()
+    cog._league_loaded_at -= ROSTER_REFRESH_SECONDS + 1  # half an hour later
+    await cog._refresh_league_data()
 
     cog._notify_admin.assert_awaited_once()
     assert cog.owners == {SWEAT_ID: 111}
@@ -564,14 +564,14 @@ async def test_league_failure_tells_admin_once_and_keeps_the_old_list(monkeypatc
 async def test_rosters_are_reloaded_only_every_30_minutes(monkeypatch):
     calls = fake_league(monkeypatch, {1: 111}, teams=[team(1, SWEAT_ID)])
     cog, _ = make_cog(monkeypatch, [])
-    real_refresh_owners(cog)
+    real_refresh_league_data(cog)
 
-    await cog._refresh_owners()
-    await cog._refresh_owners()
+    await cog._refresh_league_data()
+    await cog._refresh_league_data()
     assert len(calls) == 1
 
-    cog._owners_loaded_at = time.monotonic() - ROSTER_REFRESH_SECONDS - 1
-    await cog._refresh_owners()
+    cog._league_loaded_at = time.monotonic() - ROSTER_REFRESH_SECONDS - 1
+    await cog._refresh_league_data()
     assert len(calls) == 2
 
 

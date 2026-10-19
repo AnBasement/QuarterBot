@@ -171,8 +171,8 @@ class PlayerUpdates(commands.Cog):
         self._failing = False
         self.task: asyncio.Task[None] | None = None
         self.owners: dict[int, int] = {}
-        self._owners_loaded_at: float | None = None
-        self._owners_failing = False
+        self._league_loaded_at: float | None = None
+        self._league_failing = False
         if PLAYER_UPDATES_CHANNEL_ID is None:
             logger.info("PLAYER_UPDATES_CHANNEL_ID not set; player update feature off.")
         else:
@@ -203,17 +203,17 @@ class PlayerUpdates(commands.Cog):
             ["last_minute", "ids_at_last_minute"],
         )
 
-    async def _refresh_owners(self) -> None:
-        """Reloads which manager has which player, at most every 30 minutes.
+    async def _refresh_league_data(self) -> None:
+        """Reloads league data, at most every 30 minutes.
         Never raises: without discord_ids.json there's nobody to ping, and if
         ESPN fails, the reports go out without pings."""
         now = time.monotonic()
         if (
-            self._owners_loaded_at is not None
-            and now - self._owners_loaded_at < ROSTER_REFRESH_SECONDS
+            self._league_loaded_at is not None
+            and now - self._league_loaded_at < ROSTER_REFRESH_SECONDS
         ):
             return
-        self._owners_loaded_at = now
+        self._league_loaded_at = now
         try:
             discord_ids = load_discord_ids()
         except (FileNotFoundError, ValueError):
@@ -229,14 +229,14 @@ class PlayerUpdates(commands.Cog):
             ValueError,
         ) as exc:
             logger.warning("Couldn't load fantasy rosters for player pings: %s", exc)
-            if not self._owners_failing:
-                self._owners_failing = True
+            if not self._league_failing:
+                self._league_failing = True
                 await self._notify_admin(
                     f"[player-updates] Couldn't load the fantasy rosters, reports "
                     f"are posted without pings: {exc}"
                 )
             return  # keep the last list
-        self._owners_failing = False
+        self._league_failing = False
         self.owners = {
             player.playerId: discord_ids[team.team_id]
             for team in league.teams
@@ -277,7 +277,7 @@ class PlayerUpdates(commands.Cog):
 
         if self.last_minute is None:
             await self._load_marker()
-        await self._refresh_owners()
+        await self._refresh_league_data()
         data = await fetch_json(INJURIES_URL)
         reports = [
             r for team in data.get("injuries", []) for r in team.get("injuries", [])
