@@ -548,6 +548,8 @@ def make_cog(
     cog.last_minute = last_minute
     cog.ids_at_last_minute = ids_at_last_minute or set()
     cog.handled = {} if handled is None else handled
+    cog._feed_summary = None
+    cog._seen = {}
     cog._failing = False
     cog.owners = {}
     cog.positions = None
@@ -811,6 +813,44 @@ async def test_a_late_report_is_logged_as_a_warning(monkeypatch, caplog):
     assert len(late_lines) == 1
     assert late_lines[0].levelno == logging.WARNING
     assert "(LATE)" in late_lines[0].getMessage()
+
+
+# Diagnostics: entries that change after the bot saw them
+
+
+@pytest.mark.asyncio
+async def test_a_report_that_changes_into_news_is_logged_and_the_admin_told(
+    monkeypatch, caplog
+):
+    bare = status_entry(*QUESTIONABLE, report_id="r1", date=LATER)
+    cog, channel = make_cog(monkeypatch, [bare])
+    await cog.check_once()  # first seen as a bare status: not news
+    cog._notify_admin.assert_not_awaited()
+    player_updates.fetch_json.return_value = {
+        "injuries": [{"injuries": [injury("r1", LATER)]}]  # now with a real comment
+    }
+
+    with caplog.at_level(logging.INFO):
+        await cog.check_once()
+
+    cog._notify_admin.assert_awaited_once()
+    assert any(
+        "Report r1" in r.getMessage() and "changed" in r.getMessage()
+        for r in caplog.records
+    )
+    channel.send.assert_not_awaited()  # only reported, not posted (diagnostics)
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_report_is_not_reported_as_changed(monkeypatch, caplog):
+    cog, _ = make_cog(monkeypatch, [injury("r1", LATER)])
+    await cog.check_once()
+
+    with caplog.at_level(logging.INFO):
+        await cog.check_once()
+
+    cog._notify_admin.assert_not_awaited()
+    assert not any("changed:" in r.getMessage() for r in caplog.records)
 
 
 # Positions the league doesn't start

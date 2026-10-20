@@ -8,7 +8,7 @@ import asyncio
 import logging
 import pytz
 from discord.ext import commands
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import time
 import requests
 
@@ -255,6 +255,8 @@ class PlayerUpdates(commands.Cog):
         self._league_loaded_at: float | None = None
         self._league_failing = False
         self.handled: dict[str, str] | None = None
+        self._feed_summary: tuple[int, str] | None = None  # diagnostics
+        self._seen: dict[str, tuple[bool, str, str]] = {}  # diagnostics
         if PLAYER_UPDATES_CHANNEL_ID is None:
             logger.info("PLAYER_UPDATES_CHANNEL_ID not set; player update feature off.")
         else:
@@ -341,7 +343,10 @@ class PlayerUpdates(commands.Cog):
             for player in team.roster
         }
         if PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS:
-            self.positions = league_positions(league.settings.position_slot_counts)
+            positions = league_positions(league.settings.position_slot_counts)
+            if positions != self.positions:
+                logger.info("Positions the league starts: %s", sorted(positions or []))
+            self.positions = positions
 
     async def _load_marker(self) -> None:
         """Reads the saved marker, which is the newest minute handled and the player IDs
@@ -393,6 +398,16 @@ class PlayerUpdates(commands.Cog):
 
         if not reports:
             return  # an empty feed: nothing to do this round
+        summary = (len(reports), max(r["date"] for r in reports))
+        if summary != self._feed_summary:
+            logger.info(
+                "Feed: %d reports, newest dated %s (%s). Marker: %s.",
+                summary[0],
+                summary[1],
+                "first check" if self._feed_summary is None else "changed",
+                self.last_minute,
+            )
+            self._feed_summary = summary
         if self.last_minute is None:
             # First start: take the newest report as the starting point, instead of
             # flooding the channel with two weeks' worth of reports.
@@ -409,6 +424,37 @@ class PlayerUpdates(commands.Cog):
             await self._save_marker()
             logger.info("First player updates check: earlier reports not posted.")
             return
+
+        seen_now: dict[str, tuple[bool, str, str]] = {}
+        for report in reports:
+            now_state = (
+                is_injury_news(report),
+                report.get("status") or "",
+                report.get("shortComment") or "",
+            )
+            before = self._seen.get(report["id"])
+            if before is not None and before != now_state:
+                athlete = report.get("athlete") or {}
+                name = athlete.get("displayName", "?")
+                logger.warning(
+                    "Report %s (%s) changed: news %s to %s, status %r to %r, "
+                    "comment %r to %r",
+                    report["id"],
+                    name,
+                    before[0],
+                    now_state[0],
+                    before[1],
+                    now_state[1],
+                    before[2][:80],
+                    now_state[2][:80],
+                )
+                if not before[0] and now_state[0]:
+                    await self._notify_admin(
+                        f"[player-updates] A report for {name} changed into news "
+                        f"after the bot first saw it (id {report['id']})."
+                    )
+            seen_now[report["id"]] = now_state
+        self._seen = seen_now
 
         start = (
             self.last_minute,
@@ -450,12 +496,21 @@ class PlayerUpdates(commands.Cog):
                             f"dated {report['date']}, newest handled "
                             f"{self.last_minute}."
                         )
+                lag = round(
+                    (
+                        datetime.now(timezone.utc) - parse_espn_date(report["date"])
+                    ).total_seconds()
+                    / 60
+                )
+                team = (athlete.get("team") or {}).get("abbreviation", "?")
                 logger.log(
                     logging.WARNING if late else logging.INFO,
-                    "Report %s (%s) dated %s: %s%s",
+                    "Report %s (%s, %s) dated %s, seen %d min later: %s%s",
                     report["id"],
                     name,
+                    team,
                     report["date"],
+                    lag,
                     decision,
                     " (LATE)" if late else "",
                 )
