@@ -6,6 +6,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 
 ## [Unreleased]
 
+### Fixed
+- Player updates: reports that showed up in ESPN's feed a few minutes after newer ones were never posted. The bot now remembers which reports it has handled over the last 12 hours and posts any it hasn't, however late. A late report also gets a line in the admin channel. The `Player updates` tab gets a third column, `handled_reports`, added automatically
+
 ## [1.3.0] - 20-10-2026
 
 ### Added
