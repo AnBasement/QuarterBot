@@ -973,7 +973,7 @@ async def test_with_the_setting_on_a_defender_is_not_posted(monkeypatch):
 
 
 def cog_with_tab(cells):
-    """A cog whose state tab returns `cells` for A2:B2."""
+    """A cog whose state tab returns `cells` for A2:C2."""
     cog = PlayerUpdates.__new__(PlayerUpdates)
     tab = MagicMock()
     tab.get.return_value = cells
@@ -1013,14 +1013,110 @@ async def test_load_marker_when_google_leaves_out_the_empty_ids_cell():
 
 
 @pytest.mark.asyncio
+async def test_load_marker_reads_the_handled_list():
+    cog, _ = cog_with_tab([[MINUTE, "a", "x@2026-10-04T15:40Z,-5@" + MINUTE]])
+
+    await cog._load_marker()
+
+    assert cog.handled == {"x": "2026-10-04T15:40Z", "-5": MINUTE}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cells", [[], [[MINUTE]], [[MINUTE, "a"]], [[MINUTE, "a", ""]]]
+)
+async def test_load_marker_without_a_handled_list_gives_none(cells):
+    """None means it was never saved: check_once seeds it from the old marker."""
+    cog, _ = cog_with_tab(cells)
+
+    await cog._load_marker()
+
+    assert cog.handled is None
+
+
+@pytest.mark.asyncio
 async def test_save_marker_writes_minute_and_ids_as_text():
     cog, tab = cog_with_tab([])
     cog.last_minute = MINUTE
     cog.ids_at_last_minute = {"b", "a"}
+    cog.handled = {}
 
     await cog._save_marker()
 
-    tab.update.assert_called_once_with([[MINUTE, "a,b"]], "A2")
+    tab.update.assert_called_once_with([[MINUTE, "a,b", ""]], "A2")
+
+
+@pytest.mark.asyncio
+async def test_save_marker_writes_the_handled_list():
+    cog, tab = cog_with_tab([])
+    cog.last_minute = LATER
+    cog.ids_at_last_minute = {"new"}
+    cog.handled = {"new": LATER, "late": MINUTE}
+
+    await cog._save_marker()
+
+    tab.update.assert_called_once_with(
+        [[LATER, "new", f"late@{MINUTE},new@{LATER}"]], "A2"
+    )
+
+
+@pytest.mark.asyncio
+async def test_save_marker_with_no_handled_list_writes_an_empty_cell():
+    cog, tab = cog_with_tab([])
+    cog.last_minute = MINUTE
+    cog.ids_at_last_minute = set()
+    cog.handled = None
+
+    await cog._save_marker()
+
+    tab.update.assert_called_once_with([[MINUTE, "", ""]], "A2")
+
+
+def fake_state_tab(monkeypatch, col_count):
+    """Fakes get_or_create_tab with a tab that has `col_count` columns.
+    Returns the tab and the header the cog asked for."""
+    tab = MagicMock()
+    tab.col_count = col_count
+    asked = {}
+
+    def get_or_create_tab(spreadsheet_name, title, header):
+        asked["header"] = header
+        return tab
+
+    monkeypatch.setattr(player_updates, "get_or_create_tab", get_or_create_tab)
+    return tab, asked
+
+
+@pytest.mark.asyncio
+async def test_the_state_tab_asks_for_three_columns(monkeypatch):
+    _, asked = fake_state_tab(monkeypatch, 3)
+    cog = PlayerUpdates.__new__(PlayerUpdates)
+
+    await cog._state_tab()
+
+    assert asked["header"] == ["last_minute", "ids_at_last_minute", "handled_reports"]
+
+
+@pytest.mark.asyncio
+async def test_an_older_two_column_state_tab_gets_a_third_column(monkeypatch):
+    tab, _ = fake_state_tab(monkeypatch, 2)
+    cog = PlayerUpdates.__new__(PlayerUpdates)
+
+    await cog._state_tab()
+
+    tab.add_cols.assert_called_once_with(1)
+    tab.update.assert_called_once_with([["handled_reports"]], "C1")
+
+
+@pytest.mark.asyncio
+async def test_a_three_column_state_tab_is_left_alone(monkeypatch):
+    tab, _ = fake_state_tab(monkeypatch, 3)
+    cog = PlayerUpdates.__new__(PlayerUpdates)
+
+    await cog._state_tab()
+
+    tab.add_cols.assert_not_called()
+    tab.update.assert_not_called()
 
 
 # Failures and the admin channel

@@ -269,6 +269,7 @@ class PlayerUpdates(commands.Cog):
         self.positions: set[str] | None = None
         self._league_loaded_at: float | None = None
         self._league_failing = False
+        self.handled: dict[str, str] | None = None
         if PLAYER_UPDATES_CHANNEL_ID is None:
             logger.info("PLAYER_UPDATES_CHANNEL_ID not set; player update feature off.")
         else:
@@ -292,12 +293,17 @@ class PlayerUpdates(commands.Cog):
 
     async def _state_tab(self) -> Worksheet:
         """The Player updates tab of the pick'em spreadsheet, created if missing."""
-        return await asyncio.to_thread(
+        tab = await asyncio.to_thread(
             get_or_create_tab,
             PICKEM_SHEET_NAME,
             STATE_TAB,
-            ["last_minute", "ids_at_last_minute"],
+            ["last_minute", "ids_at_last_minute", "handled_reports"],
         )
+        if tab.col_count < 3:
+            # Tabs created before late reports were handled have two columns.
+            await asyncio.to_thread(tab.add_cols, 3 - tab.col_count)
+            await asyncio.to_thread(tab.update, [["handled_reports"]], "C1")
+        return tab
 
     async def _refresh_league_data(self) -> None:
         """Reloads who owns which player, and the positions the league starts if
@@ -354,21 +360,30 @@ class PlayerUpdates(commands.Cog):
 
     async def _load_marker(self) -> None:
         """Reads the saved marker, which is the newest minute handled and the player IDs
-        handled at that minute."""
+        handled at that minute, and the reports handled in the last 12 hours.
+        `handled` stays None if that last list was never saved (see check_once)."""
         tab = await self._state_tab()
-        values = await asyncio.to_thread(tab.get, "A2:B2")
+        values = await asyncio.to_thread(tab.get, "A2:C2")
         row = values[0] if values else []
         self.last_minute = row[0] if row and row[0] else None
         ids_text = row[1] if len(row) > 1 else ""
         self.ids_at_last_minute = set(ids_text.split(",")) if ids_text else set()
+        handled_text = row[2] if len(row) > 2 else ""
+        self.handled = handled_from_text(handled_text) if handled_text else None
 
     async def _save_marker(self) -> None:
         """Saves a marker of the newest minute handled and player ID handled at
-        that minute."""
+        that minute, and the reports handled in the last 12 hours."""
         tab = await self._state_tab()
         await asyncio.to_thread(
             tab.update,
-            [[self.last_minute, ",".join(sorted(self.ids_at_last_minute))]],
+            [
+                [
+                    self.last_minute,
+                    ",".join(sorted(self.ids_at_last_minute)),
+                    handled_to_text(self.handled or {}),
+                ]
+            ],
             "A2",
         )
 
