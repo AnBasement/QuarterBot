@@ -170,21 +170,6 @@ def build_update(
     return ping, embed
 
 
-def new_reports(
-    reports: list[dict[str, Any]], last_minute: str, ids_at_last_minute: set[str]
-) -> list[dict[str, Any]]:
-    """The reports not handled yet, oldest first: from a later minute than
-    `last_minute`, or from that minute but not in `ids_at_last_minute`."""
-    last = parse_espn_date(last_minute)
-    fresh = [
-        r
-        for r in reports
-        if parse_espn_date(r["date"]) > last
-        or (parse_espn_date(r["date"]) == last and r["id"] not in ids_at_last_minute)
-    ]
-    return sorted(fresh, key=lambda r: parse_espn_date(r["date"]))
-
-
 def advance_marker(
     last_minute: str, ids_at_last_minute: set[str], report: dict[str, Any]
 ) -> tuple[str, set[str]]:
@@ -417,29 +402,75 @@ class PlayerUpdates(commands.Cog):
             self.ids_at_last_minute = {
                 r["id"] for r in reports if parse_espn_date(r["date"]) == newest_at
             }
+            self.handled = prune_handled(
+                {r["id"]: r["date"] for r in reports},
+                lookback_cutoff(self.last_minute),
+            )
             await self._save_marker()
             logger.info("First player updates check: earlier reports not posted.")
             return
 
-        start = (self.last_minute, set(self.ids_at_last_minute))
-        try:
-            for report in new_reports(
+        start = (
+            self.last_minute,
+            set(self.ids_at_last_minute),
+            None if self.handled is None else dict(self.handled),
+        )
+        if self.handled is None:
+            # First check after the update: treat what the old marker counted as
+            # handled as handled, so nothing old is posted.
+            self.handled = seed_handled(
                 reports, self.last_minute, self.ids_at_last_minute
+            )
+            logger.info(
+                "Seeded the handled list with %d reports from the old marker.",
+                len(self.handled),
+            )
+        try:
+            for report in unhandled_reports(
+                reports, self.handled, lookback_cutoff(self.last_minute)
             ):
-                if is_injury_news(report) and is_wanted_position(
-                    report, self.positions
-                ):
+                late = parse_espn_date(report["date"]) < parse_espn_date(
+                    self.last_minute
+                )
+                athlete = report.get("athlete") or {}
+                name = athlete.get("displayName", "?")
+                if not is_injury_news(report):
+                    decision = "not news"
+                elif not is_wanted_position(report, self.positions):
+                    decision = "position not wanted"
+                else:
                     pid = player_id(report)
                     owner = self.owners.get(pid) if pid is not None else None
                     ping, embed = build_update(report, owner)
                     await channel.send(content=ping, embed=embed)
-                self.last_minute, self.ids_at_last_minute = advance_marker(
-                    self.last_minute, self.ids_at_last_minute, report
+                    decision = "posted"
+                    if late:
+                        await self._notify_admin(
+                            f"[player-updates] Posted a late report for {name}: "
+                            f"dated {report['date']}, newest handled "
+                            f"{self.last_minute}."
+                        )
+                logger.log(
+                    logging.WARNING if late else logging.INFO,
+                    "Report %s (%s) dated %s: %s%s",
+                    report["id"],
+                    name,
+                    report["date"],
+                    decision,
+                    " (LATE)" if late else "",
                 )
+                self.handled[report["id"]] = report["date"]
+                if not late:
+                    self.last_minute, self.ids_at_last_minute = advance_marker(
+                        self.last_minute, self.ids_at_last_minute, report
+                    )
         finally:
             # Save whatever was handled, even if a later send failed, so a
             # restart doesn't post reports twice.
-            if (self.last_minute, self.ids_at_last_minute) != start:
+            self.handled = prune_handled(
+                self.handled, lookback_cutoff(self.last_minute)
+            )
+            if (self.last_minute, self.ids_at_last_minute, self.handled) != start:
                 await self._save_marker()
 
     async def _run_check(self) -> int:

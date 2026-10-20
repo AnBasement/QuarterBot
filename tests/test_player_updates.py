@@ -1,5 +1,6 @@
 """Tests for cogs/player_updates.py."""
 
+import logging
 import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -27,7 +28,6 @@ from cogs.player_updates import (
     is_wanted_position,
     league_positions,
     lookback_cutoff,
-    new_reports,
     player_id,
     prune_handled,
     seconds_until_next_check,
@@ -348,30 +348,11 @@ def test_build_update_pings_the_owner_outside_the_embed():
     assert "<@" not in (embed.description or "")
 
 
-# new_reports and advance_marker
+# advance_marker
 
 MINUTE = "2026-10-04T15:43Z"
 LATER = "2026-10-04T15:44Z"
 EARLIER = "2026-10-04T15:42Z"
-
-
-def test_new_reports_are_the_unhandled_ones_oldest_first():
-    reports = [
-        report(report_id="later", date=LATER),
-        report(report_id="old", date=EARLIER),
-        report(report_id="handled", date=MINUTE),
-        report(report_id="same minute, new", date=MINUTE),
-    ]
-
-    fresh = new_reports(reports, MINUTE, {"handled"})
-
-    assert [r["id"] for r in fresh] == ["same minute, new", "later"]
-
-
-def test_new_reports_with_nothing_new():
-    reports = [report(report_id="handled", date=MINUTE)]
-
-    assert new_reports(reports, MINUTE, {"handled"}) == []
 
 
 def test_advance_marker_to_a_later_minute_starts_a_new_id_list():
@@ -451,9 +432,9 @@ def test_seed_handled_matches_the_old_minute_rule():
     assert seeded == {"old": EARLIER, "handled": MINUTE}
 
 
-def test_seeding_makes_the_new_rule_agree_with_the_old_one():
-    """So the first check after the update posts exactly what the old code
-    would have. Delete this test together with new_reports()."""
+def test_seeding_makes_the_new_rule_pick_what_the_old_rule_did():
+    """So the first check after the update posts exactly what the old minute
+    marker would have: the new ones, oldest first."""
     reports = [
         report(report_id="later", date=LATER),
         report(report_id="old", date=EARLIER),
@@ -462,10 +443,9 @@ def test_seeding_makes_the_new_rule_agree_with_the_old_one():
     ]
     seeded = seed_handled(reports, MINUTE, {"handled"})
 
-    new = unhandled_reports(reports, seeded, lookback_cutoff(MINUTE))
-    old = new_reports(reports, MINUTE, {"handled"})
+    fresh = unhandled_reports(reports, seeded, lookback_cutoff(MINUTE))
 
-    assert [r["id"] for r in new] == [r["id"] for r in old]
+    assert [r["id"] for r in fresh] == ["same minute, new", "later"]
 
 
 def test_prune_handled_forgets_old_reports():
@@ -547,7 +527,9 @@ def position_filter_off(monkeypatch):
     monkeypatch.setattr(player_updates, "PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS", False)
 
 
-def make_cog(monkeypatch, reports, last_minute=MINUTE, ids_at_last_minute=None):
+def make_cog(
+    monkeypatch, reports, last_minute=MINUTE, ids_at_last_minute=None, handled=None
+):
     """A PlayerUpdates cog with ESPN, the spreadsheet and Discord faked.
 
     `cog.saved` lists the marker each time it's saved, as (minute, ids)."""
@@ -565,6 +547,7 @@ def make_cog(monkeypatch, reports, last_minute=MINUTE, ids_at_last_minute=None):
     cog.bot = MagicMock()
     cog.last_minute = last_minute
     cog.ids_at_last_minute = ids_at_last_minute or set()
+    cog.handled = {} if handled is None else handled
     cog._failing = False
     cog.owners = {}
     cog.positions = None
@@ -608,6 +591,7 @@ async def test_first_start_posts_nothing_and_saves_the_marker(monkeypatch):
 
     channel.send.assert_not_awaited()
     assert cog.saved == [(MINUTE, {"a", "b"})]
+    assert cog.handled == {"old": EARLIER, "a": MINUTE, "b": MINUTE}
 
 
 @pytest.mark.asyncio
@@ -617,7 +601,12 @@ async def test_new_injury_reports_are_posted_oldest_first_and_saved(monkeypatch)
         injury("handled", MINUTE, "Sweat (knee) was handled."),
         injury("newer", MINUTE, "Sweat (knee) is doubtful."),
     ]
-    cog, channel = make_cog(monkeypatch, reports, ids_at_last_minute={"handled"})
+    cog, channel = make_cog(
+        monkeypatch,
+        reports,
+        ids_at_last_minute={"handled"},
+        handled={"handled": MINUTE},
+    )
 
     await cog.check_once()
 
@@ -655,7 +644,10 @@ async def test_a_status_only_entry_is_not_posted_but_moves_the_marker(
 @pytest.mark.asyncio
 async def test_nothing_new_saves_nothing(monkeypatch):
     cog, channel = make_cog(
-        monkeypatch, [injury("handled", MINUTE)], ids_at_last_minute={"handled"}
+        monkeypatch,
+        [injury("handled", MINUTE)],
+        ids_at_last_minute={"handled"},
+        handled={"handled": MINUTE},
     )
 
     await cog.check_once()
@@ -675,6 +667,150 @@ async def test_progress_is_saved_when_discord_fails_halfway(monkeypatch):
         await cog.check_once()
 
     assert cog.saved == [(LATER, {"first"})]
+    assert cog.handled == {"first": LATER}
+
+
+# Reports that show up late in ESPN's feed
+
+
+@pytest.mark.asyncio
+async def test_a_report_that_shows_up_late_is_posted_and_the_admin_told(monkeypatch):
+    """The bug: older than the marker, but never handled."""
+    cog, channel = make_cog(
+        monkeypatch,
+        [injury("late", MINUTE)],
+        last_minute=LATER,
+        ids_at_last_minute={"newer"},
+        handled={"newer": LATER},
+    )
+
+    await cog.check_once()
+
+    assert len(sent_updates(channel)) == 1
+    cog._notify_admin.assert_awaited_once()
+    assert cog.last_minute == LATER  # the marker didn't move back
+    assert cog.ids_at_last_minute == {"newer"}  # and wasn't polluted
+    assert cog.handled == {"newer": LATER, "late": MINUTE}
+
+
+@pytest.mark.asyncio
+async def test_a_late_report_for_an_unwanted_position_is_handled_quietly(
+    monkeypatch,
+):
+    cog, channel = make_cog(
+        monkeypatch,
+        [injury("late", MINUTE)],  # report() is a DE
+        last_minute=LATER,
+        ids_at_last_minute={"newer"},
+        handled={"newer": LATER},
+    )
+    cog.positions = {"QB"}
+
+    await cog.check_once()
+
+    channel.send.assert_not_awaited()
+    cog._notify_admin.assert_not_awaited()
+    assert "late" in cog.handled
+
+
+@pytest.mark.asyncio
+async def test_an_old_report_already_handled_is_not_posted_again(monkeypatch):
+    cog, channel = make_cog(
+        monkeypatch,
+        [injury("done", EARLIER)],
+        ids_at_last_minute={"x"},
+        handled={"done": EARLIER},
+    )
+
+    await cog.check_once()
+
+    channel.send.assert_not_awaited()
+    assert cog.saved == []
+
+
+@pytest.mark.asyncio
+async def test_a_report_older_than_the_window_is_not_posted(monkeypatch):
+    """Thirteen hours before the marker: too old to be a late arrival."""
+    cog, channel = make_cog(
+        monkeypatch,
+        [injury("ancient", "2026-10-04T02:44Z")],
+        last_minute=LATER,
+        ids_at_last_minute={"x"},
+    )
+
+    await cog.check_once()
+
+    channel.send.assert_not_awaited()
+    assert cog.handled == {}
+
+
+@pytest.mark.asyncio
+async def test_the_first_check_after_the_update_seeds_the_handled_list(monkeypatch):
+    """Nothing the old marker counted as handled is posted again."""
+    reports = [
+        injury("old", EARLIER),
+        injury("handled", MINUTE),
+        injury("new", LATER),
+    ]
+    cog, channel = make_cog(
+        monkeypatch,
+        reports,
+        ids_at_last_minute={"handled"},
+        handled=None,
+    )
+    cog.handled = None
+
+    await cog.check_once()
+
+    assert len(sent_updates(channel)) == 1
+    assert cog.handled == {"old": EARLIER, "handled": MINUTE, "new": LATER}
+    assert cog.saved == [(LATER, {"new"})]
+
+
+@pytest.mark.asyncio
+async def test_old_reports_leave_the_handled_list(monkeypatch):
+    cog, _ = make_cog(
+        monkeypatch,
+        [injury("new", LATER)],
+        handled={"ancient": "2026-10-03T01:00Z", "kept": MINUTE},
+    )
+
+    await cog.check_once()
+
+    assert "ancient" not in cog.handled
+    assert "kept" in cog.handled
+
+
+@pytest.mark.asyncio
+async def test_every_new_report_is_logged_with_what_was_done(monkeypatch, caplog):
+    stat_line = report("Active", "Sweat recorded five tackles.", "stats", LATER)
+    cog, _ = make_cog(monkeypatch, [stat_line, injury("news", "2026-10-04T15:45Z")])
+
+    with caplog.at_level(logging.INFO):
+        await cog.check_once()
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Report stats" in m and "not news" in m for m in messages)
+    assert any("Report news" in m and ": posted" in m for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_a_late_report_is_logged_as_a_warning(monkeypatch, caplog):
+    cog, _ = make_cog(
+        monkeypatch,
+        [injury("late", MINUTE)],
+        last_minute=LATER,
+        ids_at_last_minute={"newer"},
+        handled={"newer": LATER},
+    )
+
+    with caplog.at_level(logging.INFO):
+        await cog.check_once()
+
+    late_lines = [r for r in caplog.records if "Report late" in r.getMessage()]
+    assert len(late_lines) == 1
+    assert late_lines[0].levelno == logging.WARNING
+    assert "(LATE)" in late_lines[0].getMessage()
 
 
 # Positions the league doesn't start
