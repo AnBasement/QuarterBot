@@ -21,12 +21,18 @@ from cogs.player_updates import (
     advance_marker,
     build_update,
     is_injury_news,
+    handled_from_text,
+    handled_to_text,
     is_status_only,
     is_wanted_position,
     league_positions,
+    lookback_cutoff,
     new_reports,
     player_id,
+    prune_handled,
     seconds_until_next_check,
+    seed_handled,
+    unhandled_reports,
 )
 
 PLAYER_PAGE = "https://www.espn.com/nfl/player/_/id/4363538/montez-sweat"
@@ -380,6 +386,129 @@ def test_advance_marker_in_the_same_minute_adds_the_id():
         MINUTE,
         {"a", "b"},
     )
+
+
+# The handled list: unhandled_reports, seed_handled, prune_handled, its text
+
+
+def test_a_report_older_than_the_marker_is_new_if_not_handled():
+    """The bug: a late arrival has an older time than something already handled."""
+    reports = [
+        report(report_id="late", date=EARLIER),
+        report(report_id="done", date=LATER),
+    ]
+
+    fresh = unhandled_reports(reports, {"done": LATER}, lookback_cutoff(LATER))
+
+    assert [r["id"] for r in fresh] == ["late"]
+
+
+def test_unhandled_reports_are_oldest_first():
+    reports = [
+        report(report_id="b", date=LATER),
+        report(report_id="a", date=EARLIER),
+        report(report_id="c", date=MINUTE),
+    ]
+
+    fresh = unhandled_reports(reports, {}, lookback_cutoff(LATER))
+
+    assert [r["id"] for r in fresh] == ["a", "c", "b"]
+
+
+def test_a_handled_report_is_not_new():
+    reports = [report(report_id="x", date=MINUTE)]
+
+    assert unhandled_reports(reports, {"x": MINUTE}, lookback_cutoff(MINUTE)) == []
+
+
+def test_a_report_older_than_the_window_is_ignored():
+    """Thirteen hours before the marker: too old to be a late arrival."""
+    reports = [report(report_id="old", date="2026-10-04T02:44Z")]
+
+    assert unhandled_reports(reports, {}, lookback_cutoff(LATER)) == []
+
+
+def test_a_report_exactly_at_the_edge_of_the_window_is_new():
+    """LATER is 15:44, so the window starts at 03:44."""
+    at_the_edge = report(report_id="edge", date="2026-10-04T03:44Z")
+    just_outside = report(report_id="outside", date="2026-10-04T03:43Z")
+
+    fresh = unhandled_reports([at_the_edge, just_outside], {}, lookback_cutoff(LATER))
+
+    assert [r["id"] for r in fresh] == ["edge"]
+
+
+def test_seed_handled_matches_the_old_minute_rule():
+    reports = [
+        report(report_id="later", date=LATER),
+        report(report_id="old", date=EARLIER),
+        report(report_id="handled", date=MINUTE),
+        report(report_id="same minute, new", date=MINUTE),
+    ]
+
+    seeded = seed_handled(reports, MINUTE, {"handled"})
+
+    assert seeded == {"old": EARLIER, "handled": MINUTE}
+
+
+def test_seeding_makes_the_new_rule_agree_with_the_old_one():
+    """So the first check after the update posts exactly what the old code
+    would have. Delete this test together with new_reports()."""
+    reports = [
+        report(report_id="later", date=LATER),
+        report(report_id="old", date=EARLIER),
+        report(report_id="handled", date=MINUTE),
+        report(report_id="same minute, new", date=MINUTE),
+    ]
+    seeded = seed_handled(reports, MINUTE, {"handled"})
+
+    new = unhandled_reports(reports, seeded, lookback_cutoff(MINUTE))
+    old = new_reports(reports, MINUTE, {"handled"})
+
+    assert [r["id"] for r in new] == [r["id"] for r in old]
+
+
+def test_prune_handled_forgets_old_reports():
+    handled = {"old": "2026-10-04T02:00Z", "kept": MINUTE}
+
+    assert prune_handled(handled, lookback_cutoff(MINUTE)) == {"kept": MINUTE}
+
+
+def test_prune_handled_keeps_a_report_exactly_at_the_cutoff():
+    handled = {"edge": "2026-10-04T03:43Z"}  # MINUTE is 15:43
+
+    assert prune_handled(handled, lookback_cutoff(MINUTE)) == handled
+
+
+def test_prune_handled_leaves_its_input_alone():
+    handled = {"old": "2026-10-04T02:00Z", "kept": MINUTE}
+
+    prune_handled(handled, lookback_cutoff(MINUTE))
+
+    assert "old" in handled
+
+
+def test_lookback_cutoff_is_twelve_hours_before_the_marker():
+    assert lookback_cutoff(MINUTE) == datetime(2026, 10, 4, 3, 43, tzinfo=timezone.utc)
+
+
+def test_handled_text_round_trip_with_a_negative_id():
+    handled = {"643323": "2026-10-19T21:31Z", "-2028223": MINUTE}
+
+    assert handled_from_text(handled_to_text(handled)) == handled
+
+
+def test_handled_text_is_sorted_by_id():
+    assert handled_to_text({"b": LATER, "a": MINUTE}) == f"a@{MINUTE},b@{LATER}"
+
+
+def test_an_empty_handled_list_is_an_empty_text_and_back():
+    assert handled_to_text({}) == ""
+    assert handled_from_text("") == {}
+
+
+def test_handled_from_text_ignores_pieces_without_an_at():
+    assert handled_from_text(f"garbage,a@{MINUTE}") == {"a": MINUTE}
 
 
 # seconds_until_next_check

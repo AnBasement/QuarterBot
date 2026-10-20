@@ -8,7 +8,7 @@ import asyncio
 import logging
 import pytz
 from discord.ext import commands
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import requests
 
@@ -75,6 +75,8 @@ LINEUP_SLOT_POSITIONS: dict[str, set[str]] = {
 }
 # Lineup slots that never hold a player the injury feed reports on.
 NON_PLAYER_SLOTS = {"D/ST", "HC", "BE", "IR", "ER", "Rookie", ""}
+
+LOOKBACK = timedelta(hours=12)  # how long a report can show up late and still be posted
 
 
 def league_positions(slot_counts: dict[str, int]) -> set[str] | None:
@@ -191,6 +193,59 @@ def advance_marker(
     if parse_espn_date(report["date"]) > parse_espn_date(last_minute):
         return report["date"], {report["id"]}
     return last_minute, ids_at_last_minute | {report["id"]}
+
+
+def lookback_cutoff(last_minute: str) -> datetime:
+    """The oldest report time still looked at: LOOKBACK before the marker."""
+    return parse_espn_date(last_minute) - LOOKBACK
+
+
+def unhandled_reports(
+    reports: list[dict[str, Any]], handled: dict[str, str], cutoff: datetime
+) -> list[dict[str, Any]]:
+    """The reports not handled yet, oldest first: inside the window and not in
+    `handled`, however old their time is compared with the marker."""
+    fresh = [
+        r
+        for r in reports
+        if parse_espn_date(r["date"]) >= cutoff and r["id"] not in handled
+    ]
+    return sorted(fresh, key=lambda r: parse_espn_date(r["date"]))
+
+
+def seed_handled(
+    reports: list[dict[str, Any]], last_minute: str, ids_at_last_minute: set[str]
+) -> dict[str, str]:
+    """For the first check after the update: the reports the old minute marker
+    counted as handled (before the marker, or at it and in `ids_at_last_minute`)."""
+    last = parse_espn_date(last_minute)
+    return {
+        r["id"]: r["date"]
+        for r in reports
+        if parse_espn_date(r["date"]) < last
+        or (parse_espn_date(r["date"]) == last and r["id"] in ids_at_last_minute)
+    }
+
+
+def prune_handled(handled: dict[str, str], cutoff: datetime) -> dict[str, str]:
+    """`handled` without the reports older than the window."""
+    return {i: d for i, d in handled.items() if parse_espn_date(d) >= cutoff}
+
+
+def handled_to_text(handled: dict[str, str]) -> str:
+    """For the spreadsheet cell: "id@date,id@date". IDs can be negative, dates
+    contain neither "@" nor ",", so this is safe to split again."""
+    return ",".join(f"{i}@{d}" for i, d in sorted(handled.items()))
+
+
+def handled_from_text(text: str) -> dict[str, str]:
+    """The reverse of handled_to_text(). Pieces without an "@" are ignored."""
+    handled: dict[str, str] = {}
+    for item in text.split(","):
+        report_id, at, date = item.partition("@")
+        if at:
+            handled[report_id] = date
+    return handled
 
 
 def seconds_until_next_check(now: datetime) -> int:
