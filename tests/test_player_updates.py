@@ -21,12 +21,17 @@ from cogs.player_updates import (
     advance_marker,
     build_update,
     is_injury_news,
+    handled_from_text,
+    handled_to_text,
     is_status_only,
     is_wanted_position,
     league_positions,
-    new_reports,
+    lookback_cutoff,
     player_id,
+    prune_handled,
     seconds_until_next_check,
+    seed_handled,
+    unhandled_reports,
 )
 
 PLAYER_PAGE = "https://www.espn.com/nfl/player/_/id/4363538/montez-sweat"
@@ -342,30 +347,11 @@ def test_build_update_pings_the_owner_outside_the_embed():
     assert "<@" not in (embed.description or "")
 
 
-# new_reports and advance_marker
+# advance_marker
 
 MINUTE = "2026-10-04T15:43Z"
 LATER = "2026-10-04T15:44Z"
 EARLIER = "2026-10-04T15:42Z"
-
-
-def test_new_reports_are_the_unhandled_ones_oldest_first():
-    reports = [
-        report(report_id="later", date=LATER),
-        report(report_id="old", date=EARLIER),
-        report(report_id="handled", date=MINUTE),
-        report(report_id="same minute, new", date=MINUTE),
-    ]
-
-    fresh = new_reports(reports, MINUTE, {"handled"})
-
-    assert [r["id"] for r in fresh] == ["same minute, new", "later"]
-
-
-def test_new_reports_with_nothing_new():
-    reports = [report(report_id="handled", date=MINUTE)]
-
-    assert new_reports(reports, MINUTE, {"handled"}) == []
 
 
 def test_advance_marker_to_a_later_minute_starts_a_new_id_list():
@@ -380,6 +366,128 @@ def test_advance_marker_in_the_same_minute_adds_the_id():
         MINUTE,
         {"a", "b"},
     )
+
+
+# The handled list: unhandled_reports, seed_handled, prune_handled, its text
+
+
+def test_a_report_older_than_the_marker_is_new_if_not_handled():
+    """The bug: a late arrival has an older time than something already handled."""
+    reports = [
+        report(report_id="late", date=EARLIER),
+        report(report_id="done", date=LATER),
+    ]
+
+    fresh = unhandled_reports(reports, {"done": LATER}, lookback_cutoff(LATER))
+
+    assert [r["id"] for r in fresh] == ["late"]
+
+
+def test_unhandled_reports_are_oldest_first():
+    reports = [
+        report(report_id="b", date=LATER),
+        report(report_id="a", date=EARLIER),
+        report(report_id="c", date=MINUTE),
+    ]
+
+    fresh = unhandled_reports(reports, {}, lookback_cutoff(LATER))
+
+    assert [r["id"] for r in fresh] == ["a", "c", "b"]
+
+
+def test_a_handled_report_is_not_new():
+    reports = [report(report_id="x", date=MINUTE)]
+
+    assert unhandled_reports(reports, {"x": MINUTE}, lookback_cutoff(MINUTE)) == []
+
+
+def test_a_report_older_than_the_window_is_ignored():
+    """Thirteen hours before the marker: too old to be a late arrival."""
+    reports = [report(report_id="old", date="2026-10-04T02:44Z")]
+
+    assert unhandled_reports(reports, {}, lookback_cutoff(LATER)) == []
+
+
+def test_a_report_exactly_at_the_edge_of_the_window_is_new():
+    """LATER is 15:44, so the window starts at 03:44."""
+    at_the_edge = report(report_id="edge", date="2026-10-04T03:44Z")
+    just_outside = report(report_id="outside", date="2026-10-04T03:43Z")
+
+    fresh = unhandled_reports([at_the_edge, just_outside], {}, lookback_cutoff(LATER))
+
+    assert [r["id"] for r in fresh] == ["edge"]
+
+
+def test_seed_handled_matches_the_old_minute_rule():
+    reports = [
+        report(report_id="later", date=LATER),
+        report(report_id="old", date=EARLIER),
+        report(report_id="handled", date=MINUTE),
+        report(report_id="same minute, new", date=MINUTE),
+    ]
+
+    seeded = seed_handled(reports, MINUTE, {"handled"})
+
+    assert seeded == {"old": EARLIER, "handled": MINUTE}
+
+
+def test_seeding_makes_the_new_rule_pick_what_the_old_rule_did():
+    """So the first check after the update posts exactly what the old minute
+    marker would have: the new ones, oldest first."""
+    reports = [
+        report(report_id="later", date=LATER),
+        report(report_id="old", date=EARLIER),
+        report(report_id="handled", date=MINUTE),
+        report(report_id="same minute, new", date=MINUTE),
+    ]
+    seeded = seed_handled(reports, MINUTE, {"handled"})
+
+    fresh = unhandled_reports(reports, seeded, lookback_cutoff(MINUTE))
+
+    assert [r["id"] for r in fresh] == ["same minute, new", "later"]
+
+
+def test_prune_handled_forgets_old_reports():
+    handled = {"old": "2026-10-04T02:00Z", "kept": MINUTE}
+
+    assert prune_handled(handled, lookback_cutoff(MINUTE)) == {"kept": MINUTE}
+
+
+def test_prune_handled_keeps_a_report_exactly_at_the_cutoff():
+    handled = {"edge": "2026-10-04T03:43Z"}  # MINUTE is 15:43
+
+    assert prune_handled(handled, lookback_cutoff(MINUTE)) == handled
+
+
+def test_prune_handled_leaves_its_input_alone():
+    handled = {"old": "2026-10-04T02:00Z", "kept": MINUTE}
+
+    prune_handled(handled, lookback_cutoff(MINUTE))
+
+    assert "old" in handled
+
+
+def test_lookback_cutoff_is_twelve_hours_before_the_marker():
+    assert lookback_cutoff(MINUTE) == datetime(2026, 10, 4, 3, 43, tzinfo=timezone.utc)
+
+
+def test_handled_text_round_trip_with_a_negative_id():
+    handled = {"643323": "2026-10-19T21:31Z", "-2028223": MINUTE}
+
+    assert handled_from_text(handled_to_text(handled)) == handled
+
+
+def test_handled_text_is_sorted_by_id():
+    assert handled_to_text({"b": LATER, "a": MINUTE}) == f"a@{MINUTE},b@{LATER}"
+
+
+def test_an_empty_handled_list_is_an_empty_text_and_back():
+    assert handled_to_text({}) == ""
+    assert handled_from_text("") == {}
+
+
+def test_handled_from_text_ignores_pieces_without_an_at():
+    assert handled_from_text(f"garbage,a@{MINUTE}") == {"a": MINUTE}
 
 
 # seconds_until_next_check
@@ -418,7 +526,9 @@ def position_filter_off(monkeypatch):
     monkeypatch.setattr(player_updates, "PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS", False)
 
 
-def make_cog(monkeypatch, reports, last_minute=MINUTE, ids_at_last_minute=None):
+def make_cog(
+    monkeypatch, reports, last_minute=MINUTE, ids_at_last_minute=None, handled=None
+):
     """A PlayerUpdates cog with ESPN, the spreadsheet and Discord faked.
 
     `cog.saved` lists the marker each time it's saved, as (minute, ids)."""
@@ -436,6 +546,7 @@ def make_cog(monkeypatch, reports, last_minute=MINUTE, ids_at_last_minute=None):
     cog.bot = MagicMock()
     cog.last_minute = last_minute
     cog.ids_at_last_minute = ids_at_last_minute or set()
+    cog.handled = {} if handled is None else handled
     cog._failing = False
     cog.owners = {}
     cog.positions = None
@@ -479,6 +590,7 @@ async def test_first_start_posts_nothing_and_saves_the_marker(monkeypatch):
 
     channel.send.assert_not_awaited()
     assert cog.saved == [(MINUTE, {"a", "b"})]
+    assert cog.handled == {"old": EARLIER, "a": MINUTE, "b": MINUTE}
 
 
 @pytest.mark.asyncio
@@ -488,7 +600,12 @@ async def test_new_injury_reports_are_posted_oldest_first_and_saved(monkeypatch)
         injury("handled", MINUTE, "Sweat (knee) was handled."),
         injury("newer", MINUTE, "Sweat (knee) is doubtful."),
     ]
-    cog, channel = make_cog(monkeypatch, reports, ids_at_last_minute={"handled"})
+    cog, channel = make_cog(
+        monkeypatch,
+        reports,
+        ids_at_last_minute={"handled"},
+        handled={"handled": MINUTE},
+    )
 
     await cog.check_once()
 
@@ -526,7 +643,10 @@ async def test_a_status_only_entry_is_not_posted_but_moves_the_marker(
 @pytest.mark.asyncio
 async def test_nothing_new_saves_nothing(monkeypatch):
     cog, channel = make_cog(
-        monkeypatch, [injury("handled", MINUTE)], ids_at_last_minute={"handled"}
+        monkeypatch,
+        [injury("handled", MINUTE)],
+        ids_at_last_minute={"handled"},
+        handled={"handled": MINUTE},
     )
 
     await cog.check_once()
@@ -546,6 +666,116 @@ async def test_progress_is_saved_when_discord_fails_halfway(monkeypatch):
         await cog.check_once()
 
     assert cog.saved == [(LATER, {"first"})]
+    assert cog.handled == {"first": LATER}
+
+
+# Reports that show up late in ESPN's feed
+
+
+@pytest.mark.asyncio
+async def test_a_report_that_shows_up_late_is_posted(monkeypatch):
+    """The bug: older than the marker, but never handled."""
+    cog, channel = make_cog(
+        monkeypatch,
+        [injury("late", MINUTE)],
+        last_minute=LATER,
+        ids_at_last_minute={"newer"},
+        handled={"newer": LATER},
+    )
+
+    await cog.check_once()
+
+    assert len(sent_updates(channel)) == 1
+    assert cog.last_minute == LATER  # the marker didn't move back
+    assert cog.ids_at_last_minute == {"newer"}  # and wasn't polluted
+    assert cog.handled == {"newer": LATER, "late": MINUTE}
+
+
+@pytest.mark.asyncio
+async def test_a_late_report_for_an_unwanted_position_is_handled_but_not_posted(
+    monkeypatch,
+):
+    cog, channel = make_cog(
+        monkeypatch,
+        [injury("late", MINUTE)],  # report() is a DE
+        last_minute=LATER,
+        ids_at_last_minute={"newer"},
+        handled={"newer": LATER},
+    )
+    cog.positions = {"QB"}
+
+    await cog.check_once()
+
+    channel.send.assert_not_awaited()
+    assert "late" in cog.handled
+
+
+@pytest.mark.asyncio
+async def test_an_old_report_already_handled_is_not_posted_again(monkeypatch):
+    cog, channel = make_cog(
+        monkeypatch,
+        [injury("done", EARLIER)],
+        ids_at_last_minute={"x"},
+        handled={"done": EARLIER},
+    )
+
+    await cog.check_once()
+
+    channel.send.assert_not_awaited()
+    assert cog.saved == []
+
+
+@pytest.mark.asyncio
+async def test_a_report_older_than_the_window_is_not_posted(monkeypatch):
+    """Thirteen hours before the marker: too old to be a late arrival."""
+    cog, channel = make_cog(
+        monkeypatch,
+        [injury("ancient", "2026-10-04T02:44Z")],
+        last_minute=LATER,
+        ids_at_last_minute={"x"},
+    )
+
+    await cog.check_once()
+
+    channel.send.assert_not_awaited()
+    assert cog.handled == {}
+
+
+@pytest.mark.asyncio
+async def test_the_first_check_after_the_update_seeds_the_handled_list(monkeypatch):
+    """Nothing the old marker counted as handled is posted again."""
+    reports = [
+        injury("old", EARLIER),
+        injury("handled", MINUTE),
+        injury("new", LATER),
+    ]
+    cog, channel = make_cog(
+        monkeypatch,
+        reports,
+        ids_at_last_minute={"handled"},
+        handled=None,
+    )
+    cog.handled = None
+
+    await cog.check_once()
+
+    assert len(sent_updates(channel)) == 1
+    assert cog.handled == {"old": EARLIER, "handled": MINUTE, "new": LATER}
+    assert cog.saved == [(LATER, {"new"})]
+
+
+@pytest.mark.asyncio
+async def test_old_reports_leave_the_handled_list(monkeypatch):
+    cog, _ = make_cog(
+        monkeypatch,
+        [injury("new", LATER)],
+        handled={"ancient": "2026-10-03T01:00Z", "kept": MINUTE},
+    )
+
+    await cog.check_once()
+
+    assert "ancient" not in cog.handled
+    assert "kept" in cog.handled
 
 
 # Positions the league doesn't start
@@ -844,7 +1074,7 @@ async def test_with_the_setting_on_a_defender_is_not_posted(monkeypatch):
 
 
 def cog_with_tab(cells):
-    """A cog whose state tab returns `cells` for A2:B2."""
+    """A cog whose state tab returns `cells` for A2:C2."""
     cog = PlayerUpdates.__new__(PlayerUpdates)
     tab = MagicMock()
     tab.get.return_value = cells
@@ -884,14 +1114,110 @@ async def test_load_marker_when_google_leaves_out_the_empty_ids_cell():
 
 
 @pytest.mark.asyncio
+async def test_load_marker_reads_the_handled_list():
+    cog, _ = cog_with_tab([[MINUTE, "a", "x@2026-10-04T15:40Z,-5@" + MINUTE]])
+
+    await cog._load_marker()
+
+    assert cog.handled == {"x": "2026-10-04T15:40Z", "-5": MINUTE}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cells", [[], [[MINUTE]], [[MINUTE, "a"]], [[MINUTE, "a", ""]]]
+)
+async def test_load_marker_without_a_handled_list_gives_none(cells):
+    """None means it was never saved: check_once seeds it from the old marker."""
+    cog, _ = cog_with_tab(cells)
+
+    await cog._load_marker()
+
+    assert cog.handled is None
+
+
+@pytest.mark.asyncio
 async def test_save_marker_writes_minute_and_ids_as_text():
     cog, tab = cog_with_tab([])
     cog.last_minute = MINUTE
     cog.ids_at_last_minute = {"b", "a"}
+    cog.handled = {}
 
     await cog._save_marker()
 
-    tab.update.assert_called_once_with([[MINUTE, "a,b"]], "A2")
+    tab.update.assert_called_once_with([[MINUTE, "a,b", ""]], "A2")
+
+
+@pytest.mark.asyncio
+async def test_save_marker_writes_the_handled_list():
+    cog, tab = cog_with_tab([])
+    cog.last_minute = LATER
+    cog.ids_at_last_minute = {"new"}
+    cog.handled = {"new": LATER, "late": MINUTE}
+
+    await cog._save_marker()
+
+    tab.update.assert_called_once_with(
+        [[LATER, "new", f"late@{MINUTE},new@{LATER}"]], "A2"
+    )
+
+
+@pytest.mark.asyncio
+async def test_save_marker_with_no_handled_list_writes_an_empty_cell():
+    cog, tab = cog_with_tab([])
+    cog.last_minute = MINUTE
+    cog.ids_at_last_minute = set()
+    cog.handled = None
+
+    await cog._save_marker()
+
+    tab.update.assert_called_once_with([[MINUTE, "", ""]], "A2")
+
+
+def fake_state_tab(monkeypatch, col_count):
+    """Fakes get_or_create_tab with a tab that has `col_count` columns.
+    Returns the tab and the header the cog asked for."""
+    tab = MagicMock()
+    tab.col_count = col_count
+    asked = {}
+
+    def get_or_create_tab(spreadsheet_name, title, header):
+        asked["header"] = header
+        return tab
+
+    monkeypatch.setattr(player_updates, "get_or_create_tab", get_or_create_tab)
+    return tab, asked
+
+
+@pytest.mark.asyncio
+async def test_the_state_tab_asks_for_three_columns(monkeypatch):
+    _, asked = fake_state_tab(monkeypatch, 3)
+    cog = PlayerUpdates.__new__(PlayerUpdates)
+
+    await cog._state_tab()
+
+    assert asked["header"] == ["last_minute", "ids_at_last_minute", "handled_reports"]
+
+
+@pytest.mark.asyncio
+async def test_an_older_two_column_state_tab_gets_a_third_column(monkeypatch):
+    tab, _ = fake_state_tab(monkeypatch, 2)
+    cog = PlayerUpdates.__new__(PlayerUpdates)
+
+    await cog._state_tab()
+
+    tab.add_cols.assert_called_once_with(1)
+    tab.update.assert_called_once_with([["handled_reports"]], "C1")
+
+
+@pytest.mark.asyncio
+async def test_a_three_column_state_tab_is_left_alone(monkeypatch):
+    tab, _ = fake_state_tab(monkeypatch, 3)
+    cog = PlayerUpdates.__new__(PlayerUpdates)
+
+    await cog._state_tab()
+
+    tab.add_cols.assert_not_called()
+    tab.update.assert_not_called()
 
 
 # Failures and the admin channel

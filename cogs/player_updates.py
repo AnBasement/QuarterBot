@@ -8,7 +8,7 @@ import asyncio
 import logging
 import pytz
 from discord.ext import commands
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import requests
 
@@ -75,6 +75,8 @@ LINEUP_SLOT_POSITIONS: dict[str, set[str]] = {
 }
 # Lineup slots that never hold a player the injury feed reports on.
 NON_PLAYER_SLOTS = {"D/ST", "HC", "BE", "IR", "ER", "Rookie", ""}
+
+LOOKBACK = timedelta(hours=12)  # how long a report can show up late and still be posted
 
 
 def league_positions(slot_counts: dict[str, int]) -> set[str] | None:
@@ -168,21 +170,6 @@ def build_update(
     return ping, embed
 
 
-def new_reports(
-    reports: list[dict[str, Any]], last_minute: str, ids_at_last_minute: set[str]
-) -> list[dict[str, Any]]:
-    """The reports not handled yet, oldest first: from a later minute than
-    `last_minute`, or from that minute but not in `ids_at_last_minute`."""
-    last = parse_espn_date(last_minute)
-    fresh = [
-        r
-        for r in reports
-        if parse_espn_date(r["date"]) > last
-        or (parse_espn_date(r["date"]) == last and r["id"] not in ids_at_last_minute)
-    ]
-    return sorted(fresh, key=lambda r: parse_espn_date(r["date"]))
-
-
 def advance_marker(
     last_minute: str, ids_at_last_minute: set[str], report: dict[str, Any]
 ) -> tuple[str, set[str]]:
@@ -191,6 +178,59 @@ def advance_marker(
     if parse_espn_date(report["date"]) > parse_espn_date(last_minute):
         return report["date"], {report["id"]}
     return last_minute, ids_at_last_minute | {report["id"]}
+
+
+def lookback_cutoff(last_minute: str) -> datetime:
+    """The oldest report time still looked at: LOOKBACK before the marker."""
+    return parse_espn_date(last_minute) - LOOKBACK
+
+
+def unhandled_reports(
+    reports: list[dict[str, Any]], handled: dict[str, str], cutoff: datetime
+) -> list[dict[str, Any]]:
+    """The reports not handled yet, oldest first: inside the window and not in
+    `handled`, however old their time is compared with the marker."""
+    fresh = [
+        r
+        for r in reports
+        if parse_espn_date(r["date"]) >= cutoff and r["id"] not in handled
+    ]
+    return sorted(fresh, key=lambda r: parse_espn_date(r["date"]))
+
+
+def seed_handled(
+    reports: list[dict[str, Any]], last_minute: str, ids_at_last_minute: set[str]
+) -> dict[str, str]:
+    """For the first check after the update: the reports the old minute marker
+    counted as handled (before the marker, or at it and in `ids_at_last_minute`)."""
+    last = parse_espn_date(last_minute)
+    return {
+        r["id"]: r["date"]
+        for r in reports
+        if parse_espn_date(r["date"]) < last
+        or (parse_espn_date(r["date"]) == last and r["id"] in ids_at_last_minute)
+    }
+
+
+def prune_handled(handled: dict[str, str], cutoff: datetime) -> dict[str, str]:
+    """`handled` without the reports older than the window."""
+    return {i: d for i, d in handled.items() if parse_espn_date(d) >= cutoff}
+
+
+def handled_to_text(handled: dict[str, str]) -> str:
+    """For the spreadsheet cell: "id@date,id@date". IDs can be negative, dates
+    contain neither "@" nor ",", so this is safe to split again."""
+    return ",".join(f"{i}@{d}" for i, d in sorted(handled.items()))
+
+
+def handled_from_text(text: str) -> dict[str, str]:
+    """The reverse of handled_to_text(). Pieces without an "@" are ignored."""
+    handled: dict[str, str] = {}
+    for item in text.split(","):
+        report_id, at, date = item.partition("@")
+        if at:
+            handled[report_id] = date
+    return handled
 
 
 def seconds_until_next_check(now: datetime) -> int:
@@ -214,6 +254,7 @@ class PlayerUpdates(commands.Cog):
         self.positions: set[str] | None = None
         self._league_loaded_at: float | None = None
         self._league_failing = False
+        self.handled: dict[str, str] | None = None
         if PLAYER_UPDATES_CHANNEL_ID is None:
             logger.info("PLAYER_UPDATES_CHANNEL_ID not set; player update feature off.")
         else:
@@ -237,12 +278,17 @@ class PlayerUpdates(commands.Cog):
 
     async def _state_tab(self) -> Worksheet:
         """The Player updates tab of the pick'em spreadsheet, created if missing."""
-        return await asyncio.to_thread(
+        tab = await asyncio.to_thread(
             get_or_create_tab,
             PICKEM_SHEET_NAME,
             STATE_TAB,
-            ["last_minute", "ids_at_last_minute"],
+            ["last_minute", "ids_at_last_minute", "handled_reports"],
         )
+        if tab.col_count < 3:
+            # Tabs created before late reports were handled have two columns.
+            await asyncio.to_thread(tab.add_cols, 3 - tab.col_count)
+            await asyncio.to_thread(tab.update, [["handled_reports"]], "C1")
+        return tab
 
     async def _refresh_league_data(self) -> None:
         """Reloads who owns which player, and the positions the league starts if
@@ -295,25 +341,37 @@ class PlayerUpdates(commands.Cog):
             for player in team.roster
         }
         if PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS:
-            self.positions = league_positions(league.settings.position_slot_counts)
+            positions = league_positions(league.settings.position_slot_counts)
+            if positions != self.positions:
+                logger.info("Positions the league starts: %s", sorted(positions or []))
+            self.positions = positions
 
     async def _load_marker(self) -> None:
         """Reads the saved marker, which is the newest minute handled and the player IDs
-        handled at that minute."""
+        handled at that minute, and the reports handled in the last 12 hours.
+        `handled` stays None if that last list was never saved (see check_once)."""
         tab = await self._state_tab()
-        values = await asyncio.to_thread(tab.get, "A2:B2")
+        values = await asyncio.to_thread(tab.get, "A2:C2")
         row = values[0] if values else []
         self.last_minute = row[0] if row and row[0] else None
         ids_text = row[1] if len(row) > 1 else ""
         self.ids_at_last_minute = set(ids_text.split(",")) if ids_text else set()
+        handled_text = row[2] if len(row) > 2 else ""
+        self.handled = handled_from_text(handled_text) if handled_text else None
 
     async def _save_marker(self) -> None:
         """Saves a marker of the newest minute handled and player ID handled at
-        that minute."""
+        that minute, and the reports handled in the last 12 hours."""
         tab = await self._state_tab()
         await asyncio.to_thread(
             tab.update,
-            [[self.last_minute, ",".join(sorted(self.ids_at_last_minute))]],
+            [
+                [
+                    self.last_minute,
+                    ",".join(sorted(self.ids_at_last_minute)),
+                    handled_to_text(self.handled or {}),
+                ]
+            ],
             "A2",
         )
 
@@ -347,15 +405,38 @@ class PlayerUpdates(commands.Cog):
             self.ids_at_last_minute = {
                 r["id"] for r in reports if parse_espn_date(r["date"]) == newest_at
             }
+            self.handled = prune_handled(
+                {r["id"]: r["date"] for r in reports},
+                lookback_cutoff(self.last_minute),
+            )
             await self._save_marker()
             logger.info("First player updates check: earlier reports not posted.")
             return
 
-        start = (self.last_minute, set(self.ids_at_last_minute))
-        try:
-            for report in new_reports(
+        start = (
+            self.last_minute,
+            set(self.ids_at_last_minute),
+            None if self.handled is None else dict(self.handled),
+        )
+        if self.handled is None:
+            # First check after the update: treat what the old marker counted as
+            # handled as handled, so nothing old is posted.
+            self.handled = seed_handled(
                 reports, self.last_minute, self.ids_at_last_minute
+            )
+            logger.info(
+                "Seeded the handled list with %d reports from the old marker.",
+                len(self.handled),
+            )
+        try:
+            for report in unhandled_reports(
+                reports, self.handled, lookback_cutoff(self.last_minute)
             ):
+                # A report that shows up late (older than the marker) is posted
+                # like any other, but must not move the marker back.
+                late = parse_espn_date(report["date"]) < parse_espn_date(
+                    self.last_minute
+                )
                 if is_injury_news(report) and is_wanted_position(
                     report, self.positions
                 ):
@@ -363,13 +444,18 @@ class PlayerUpdates(commands.Cog):
                     owner = self.owners.get(pid) if pid is not None else None
                     ping, embed = build_update(report, owner)
                     await channel.send(content=ping, embed=embed)
-                self.last_minute, self.ids_at_last_minute = advance_marker(
-                    self.last_minute, self.ids_at_last_minute, report
-                )
+                self.handled[report["id"]] = report["date"]
+                if not late:
+                    self.last_minute, self.ids_at_last_minute = advance_marker(
+                        self.last_minute, self.ids_at_last_minute, report
+                    )
         finally:
             # Save whatever was handled, even if a later send failed, so a
             # restart doesn't post reports twice.
-            if (self.last_minute, self.ids_at_last_minute) != start:
+            self.handled = prune_handled(
+                self.handled, lookback_cutoff(self.last_minute)
+            )
+            if (self.last_minute, self.ids_at_last_minute, self.handled) != start:
                 await self._save_marker()
 
     async def _run_check(self) -> int:
