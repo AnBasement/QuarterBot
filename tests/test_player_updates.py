@@ -1,6 +1,5 @@
 """Tests for cogs/player_updates.py."""
 
-import logging
 import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -548,8 +547,6 @@ def make_cog(
     cog.last_minute = last_minute
     cog.ids_at_last_minute = ids_at_last_minute or set()
     cog.handled = {} if handled is None else handled
-    cog._feed_summary = None
-    cog._seen = {}
     cog._failing = False
     cog.owners = {}
     cog.positions = None
@@ -676,7 +673,7 @@ async def test_progress_is_saved_when_discord_fails_halfway(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_report_that_shows_up_late_is_posted_and_the_admin_told(monkeypatch):
+async def test_a_report_that_shows_up_late_is_posted(monkeypatch):
     """The bug: older than the marker, but never handled."""
     cog, channel = make_cog(
         monkeypatch,
@@ -689,14 +686,13 @@ async def test_a_report_that_shows_up_late_is_posted_and_the_admin_told(monkeypa
     await cog.check_once()
 
     assert len(sent_updates(channel)) == 1
-    cog._notify_admin.assert_awaited_once()
     assert cog.last_minute == LATER  # the marker didn't move back
     assert cog.ids_at_last_minute == {"newer"}  # and wasn't polluted
     assert cog.handled == {"newer": LATER, "late": MINUTE}
 
 
 @pytest.mark.asyncio
-async def test_a_late_report_for_an_unwanted_position_is_handled_quietly(
+async def test_a_late_report_for_an_unwanted_position_is_handled_but_not_posted(
     monkeypatch,
 ):
     cog, channel = make_cog(
@@ -711,7 +707,6 @@ async def test_a_late_report_for_an_unwanted_position_is_handled_quietly(
     await cog.check_once()
 
     channel.send.assert_not_awaited()
-    cog._notify_admin.assert_not_awaited()
     assert "late" in cog.handled
 
 
@@ -781,76 +776,6 @@ async def test_old_reports_leave_the_handled_list(monkeypatch):
 
     assert "ancient" not in cog.handled
     assert "kept" in cog.handled
-
-
-@pytest.mark.asyncio
-async def test_every_new_report_is_logged_with_what_was_done(monkeypatch, caplog):
-    stat_line = report("Active", "Sweat recorded five tackles.", "stats", LATER)
-    cog, _ = make_cog(monkeypatch, [stat_line, injury("news", "2026-10-04T15:45Z")])
-
-    with caplog.at_level(logging.INFO):
-        await cog.check_once()
-
-    messages = [record.getMessage() for record in caplog.records]
-    assert any("Report stats" in m and "not news" in m for m in messages)
-    assert any("Report news" in m and ": posted" in m for m in messages)
-
-
-@pytest.mark.asyncio
-async def test_a_late_report_is_logged_as_a_warning(monkeypatch, caplog):
-    cog, _ = make_cog(
-        monkeypatch,
-        [injury("late", MINUTE)],
-        last_minute=LATER,
-        ids_at_last_minute={"newer"},
-        handled={"newer": LATER},
-    )
-
-    with caplog.at_level(logging.INFO):
-        await cog.check_once()
-
-    late_lines = [r for r in caplog.records if "Report late" in r.getMessage()]
-    assert len(late_lines) == 1
-    assert late_lines[0].levelno == logging.WARNING
-    assert "(LATE)" in late_lines[0].getMessage()
-
-
-# Diagnostics: entries that change after the bot saw them
-
-
-@pytest.mark.asyncio
-async def test_a_report_that_changes_into_news_is_logged_and_the_admin_told(
-    monkeypatch, caplog
-):
-    bare = status_entry(*QUESTIONABLE, report_id="r1", date=LATER)
-    cog, channel = make_cog(monkeypatch, [bare])
-    await cog.check_once()  # first seen as a bare status: not news
-    cog._notify_admin.assert_not_awaited()
-    player_updates.fetch_json.return_value = {
-        "injuries": [{"injuries": [injury("r1", LATER)]}]  # now with a real comment
-    }
-
-    with caplog.at_level(logging.INFO):
-        await cog.check_once()
-
-    cog._notify_admin.assert_awaited_once()
-    assert any(
-        "Report r1" in r.getMessage() and "changed" in r.getMessage()
-        for r in caplog.records
-    )
-    channel.send.assert_not_awaited()  # only reported, not posted (diagnostics)
-
-
-@pytest.mark.asyncio
-async def test_an_unchanged_report_is_not_reported_as_changed(monkeypatch, caplog):
-    cog, _ = make_cog(monkeypatch, [injury("r1", LATER)])
-    await cog.check_once()
-
-    with caplog.at_level(logging.INFO):
-        await cog.check_once()
-
-    cog._notify_admin.assert_not_awaited()
-    assert not any("changed:" in r.getMessage() for r in caplog.records)
 
 
 # Positions the league doesn't start
