@@ -17,7 +17,7 @@ from cogs.ppr import (
     season_rows,
     season_stats,
 )
-from core.errors import PPRFetchError, PPRSnapshotError
+from core.errors import PPRFetchError, PPRSnapshotError, SheetNotFoundError
 from data.messages import PPR_NO_DATA_MESSAGE
 
 
@@ -557,6 +557,17 @@ async def test_last_history_or_empty_is_empty_when_google_fails():
 
 
 @pytest.mark.asyncio
+async def test_last_history_or_empty_is_empty_when_the_tab_cant_be_opened():
+    # get_sheet() raises SheetNotFoundError for any Google failure, 500s included.
+    cog = PPR(MagicMock())
+    cog._last_history = AsyncMock(
+        side_effect=SheetNotFoundError("Sheet", 0, "Error opening document: 500")
+    )
+
+    assert await cog._last_history_or_empty(2026) == {}
+
+
+@pytest.mark.asyncio
 async def test_save_writes_the_history_and_the_data_tab():
     cog = PPR(MagicMock())
     cog._save_history = AsyncMock()
@@ -575,6 +586,18 @@ async def test_save_turns_google_errors_into_ppr_snapshot_errors():
     cog = PPR(MagicMock())
     cog._save_history = AsyncMock(
         side_effect=requests.exceptions.ConnectionError("Google down")
+    )
+    cog._export = AsyncMock()
+
+    with pytest.raises(PPRSnapshotError):
+        await cog._save(2026, [], [])
+
+
+@pytest.mark.asyncio
+async def test_save_turns_a_tab_that_cant_be_opened_into_a_ppr_snapshot_error():
+    cog = PPR(MagicMock())
+    cog._save_history = AsyncMock(
+        side_effect=SheetNotFoundError("Sheet", 0, "Error opening document: 500")
     )
     cog._export = AsyncMock()
 
