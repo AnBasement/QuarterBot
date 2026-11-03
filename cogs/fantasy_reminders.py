@@ -20,7 +20,8 @@ from discord.ext.commands import Bot
 from data.channel_ids import REMINDER_CHANNEL_ID, ADMIN_CHANNEL_ID
 from data.config import LEAGUE_TIMEZONE, FANTASY_FINAL_WEEK, LEAGUE_NAME
 from data.discord_ids import load_discord_ids
-from core.utils.espn_helpers import get_league
+from core.decorators import admin_only
+from core.utils.espn_helpers import ESPN_ERRORS, get_league
 from core.utils.discord_helpers import get_text_channel, split_message
 from core.utils.quiet_hours import clamp_to_quiet_hours
 from data.messages import (
@@ -393,6 +394,25 @@ class FantasyReminders(commands.Cog):
                 f"[fantasy_reminders] Error in matchup digest: {exc}"
             )
             await channel.send(DIGEST_FAILURE_MESSAGE)
+
+    @commands.command(name="digest")
+    @admin_only()
+    async def digest(self, ctx: commands.Context) -> None:
+        """Posts the weekly matchup digest in the reminder channel, for when the
+        Tuesday one failed. Safe to run once: it saves the PPR ranking again."""
+        channel = get_text_channel(self.bot, REMINDER_CHANNEL_ID)
+        if channel is None:
+            await ctx.send(
+                f"Could not find the reminder channel {REMINDER_CHANNEL_ID}."
+            )
+            return
+        try:
+            league = await asyncio.to_thread(get_league)
+        except ESPN_ERRORS as exc:
+            await ctx.send(f"Could not fetch the ESPN league: {exc}")
+            return
+        await self.build_matchup_digest(channel, league)
+        await ctx.send(f"Posted the digest in <#{REMINDER_CHANNEL_ID}>.")
 
     async def reminder_scheduler(self) -> None:
         """Sends the Tuesday 18:00 messages once a week. Runs forever.
