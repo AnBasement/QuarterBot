@@ -686,3 +686,13 @@ class TestDigestCommand:
 
         mock_channel.send.assert_not_called()
         assert "ESPN failed, nothing was posted" in ctx.send.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_says_nothing_was_posted_before_a_week_has_been_played(
+        self, mock_bot, mock_channel
+    ):
+        league = make_digest_league(1, [make_digest_team("A", 10)])
+        ctx = await self.run(mock_bot, mock_channel, league=league)
+
+        mock_channel.send.assert_not_called()
+        assert "Nothing to post" in ctx.send.call_args.args[0]

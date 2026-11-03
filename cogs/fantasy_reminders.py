@@ -113,11 +113,12 @@ class FantasyReminders(commands.Cog):
 
     async def build_matchup_digest(
         self, channel: discord.TextChannel, league: League
-    ) -> None:
+    ) -> bool:
         """Posts last week's results, awards, streaks and next week's matchups.
 
         The digest recapping FANTASY_FINAL_WEEK shows final standings instead
-        of a preview; nothing is posted after that.
+        of a preview; nothing is posted after that. Returns whether a digest
+        was posted.
         """
         # The week about to be played. Not league.current_week: espn_api caps
         # it at the final week, so it can't tell when the season is over.
@@ -125,7 +126,7 @@ class FantasyReminders(commands.Cog):
 
         if upcoming_week <= 1:
             logger.info("Skipping matchup digest, no week played yet")
-            return
+            return False
         last_week = upcoming_week - 1
         next_week = upcoming_week
         if last_week > FANTASY_FINAL_WEEK:
@@ -135,7 +136,7 @@ class FantasyReminders(commands.Cog):
                 FANTASY_FINAL_WEEK,
                 upcoming_week,
             )
-            return
+            return False
         # The Tuesday after the championship, which it recaps.
         is_final_week = last_week == FANTASY_FINAL_WEEK
 
@@ -332,6 +333,7 @@ class FantasyReminders(commands.Cog):
         if channel:
             for chunk in split_message("\n".join(msg)):
                 await channel.send(chunk)
+        return True
 
     async def _ppr_lines(
         self, league: League, week: int, is_final_week: bool
@@ -408,12 +410,17 @@ class FantasyReminders(commands.Cog):
             return
         try:
             league = await asyncio.to_thread(get_league)
-            await self.build_matchup_digest(channel, league)
+            posted = await self.build_matchup_digest(channel, league)
         except ESPN_ERRORS as exc:
             # The digest is sent as its last step, so nothing was posted.
             await ctx.send(f"ESPN failed, nothing was posted: {exc}")
             return
-        await ctx.send(f"Posted the digest in <#{REMINDER_CHANNEL_ID}>.")
+        if posted:
+            await ctx.send(f"Posted the digest in <#{REMINDER_CHANNEL_ID}>.")
+        else:
+            await ctx.send(
+                "Nothing to post: no week has been played yet, or the season is over."
+            )
 
     async def reminder_scheduler(self) -> None:
         """Sends the Tuesday 18:00 messages once a week. Runs forever.
