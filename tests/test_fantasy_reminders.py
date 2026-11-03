@@ -674,4 +674,15 @@ class TestDigestCommand:
         )
 
         mock_channel.send.assert_not_called()
-        assert "Could not fetch the ESPN league" in ctx.send.call_args.args[0]
+        assert "ESPN failed, nothing was posted" in ctx.send.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_espn_failing_while_building_the_digest_tells_the_admin(
+        self, mock_bot, mock_channel
+    ):
+        league = make_digest_league(9, [make_digest_team("A", 10)])
+        league.box_scores.side_effect = requests.exceptions.ConnectionError()
+        ctx = await self.run(mock_bot, mock_channel, league=league)
+
+        mock_channel.send.assert_not_called()
+        assert "ESPN failed, nothing was posted" in ctx.send.call_args.args[0]

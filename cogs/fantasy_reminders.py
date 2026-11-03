@@ -408,10 +408,11 @@ class FantasyReminders(commands.Cog):
             return
         try:
             league = await asyncio.to_thread(get_league)
+            await self.build_matchup_digest(channel, league)
         except ESPN_ERRORS as exc:
-            await ctx.send(f"Could not fetch the ESPN league: {exc}")
+            # The digest is sent as its last step, so nothing was posted.
+            await ctx.send(f"ESPN failed, nothing was posted: {exc}")
             return
-        await self.build_matchup_digest(channel, league)
         await ctx.send(f"Posted the digest in <#{REMINDER_CHANNEL_ID}>.")
 
     async def reminder_scheduler(self) -> None:
