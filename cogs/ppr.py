@@ -11,7 +11,7 @@ from gspread.utils import ValueRenderOption
 from gspread.worksheet import Worksheet
 import requests
 from discord.ext import commands
-from core.errors import PPRFetchError, PPRSnapshotError
+from core.errors import PPRFetchError, PPRSnapshotError, SheetsError
 from cogs.sheets import get_or_create_tab
 from core.decorators import admin_only
 from core.utils.espn_helpers import ESPN_ERRORS, get_league
@@ -51,10 +51,12 @@ DATA_HEADER = [
     "raw",
     "ppr",
 ]
-# What a Google Sheets call can raise when Google is the problem.
+# What a Google Sheets call can raise when Google is the problem. SheetsError is
+# what get_sheet() turns every Google failure into, e.g. a 500 from Google.
 SHEETS_ERRORS = (
     gspread.exceptions.GSpreadException,
     requests.exceptions.RequestException,
+    SheetsError,
 )
 PLAYED = {"W", "L", "T"}  # ESPN tags unplayed weeks as "U"
 

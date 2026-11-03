@@ -636,3 +636,63 @@ class TestPprInTheRecap:
 
         assert "PPR" not in self.sent_text(mock_channel)
         ppr.recap_section.assert_not_awaited()
+
+
+class TestDigestCommand:
+    """!digest posts the digest by hand, in the reminder channel."""
+
+    async def run(self, mock_bot, mock_channel, league=None, league_error=None):
+        with patch.object(FantasyReminders, "reminder_scheduler", return_value=None):
+            cog = FantasyReminders(mock_bot)
+        ctx = Mock()
+        ctx.send = AsyncMock()
+        with (
+            patch("cogs.fantasy_reminders.get_text_channel", return_value=mock_channel),
+            patch(
+                "cogs.fantasy_reminders.get_league",
+                return_value=league,
+                side_effect=league_error,
+            ),
+        ):
+            await cog.digest.callback(cog, ctx)
+        return ctx
+
+    @pytest.mark.asyncio
+    async def test_posts_digest_in_reminder_channel(self, mock_bot, mock_channel):
+        league = make_digest_league(9, [make_digest_team("A", 10)])
+        ctx = await self.run(mock_bot, mock_channel, league=league)
+
+        assert mock_channel.send.called
+        ctx.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_espn_failure_tells_the_admin_and_posts_nothing(
+        self, mock_bot, mock_channel
+    ):
+        ctx = await self.run(
+            mock_bot, mock_channel, league_error=requests.exceptions.ConnectionError()
+        )
+
+        mock_channel.send.assert_not_called()
+        assert "ESPN failed, nothing was posted" in ctx.send.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_espn_failing_while_building_the_digest_tells_the_admin(
+        self, mock_bot, mock_channel
+    ):
+        league = make_digest_league(9, [make_digest_team("A", 10)])
+        league.box_scores.side_effect = requests.exceptions.ConnectionError()
+        ctx = await self.run(mock_bot, mock_channel, league=league)
+
+        mock_channel.send.assert_not_called()
+        assert "ESPN failed, nothing was posted" in ctx.send.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_says_nothing_was_posted_before_a_week_has_been_played(
+        self, mock_bot, mock_channel
+    ):
+        league = make_digest_league(1, [make_digest_team("A", 10)])
+        ctx = await self.run(mock_bot, mock_channel, league=league)
+
+        mock_channel.send.assert_not_called()
+        assert "Nothing to post" in ctx.send.call_args.args[0]

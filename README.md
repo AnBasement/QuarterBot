@@ -79,6 +79,8 @@ If `PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS` is set to `true`, only updates for pla
 
 Every Tuesday at 18:00 (league time), the bot reminds everyone not to forget their waivers before the new week starts, then posts a recap of the fantasy week just played: every matchup's score, the week's awards (nail-biter, top and lowest scorer, best bench, over- and underachiever compared to ESPN's projections), the current win and loss streaks of three or more, and the PPR ranking with changes since last week. Then a preview of the coming week's matchups, or, after the final week, the final standings with medals. The season-end recap shows the final season PPR and each manager's career PPR, with average over finished season, number of seasons and career value.
 
+If the Tuesday recap fails, `!digest` (admins only) posts it by hand in the reminder channel. Run it once, since it saves the PPR ranking again.
+
 ### Inactive-player alerts
 
 About an hour before kickoff, the bot checks every team's starting lineup for players who are Out, Doubtful, Inactive or suspended, and warns the manager (kept out of the night, like the reminders). With `discord_ids.json` it pings the right person; without it, it posts one general `@everyone` message.
