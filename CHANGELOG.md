@@ -6,11 +6,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and th
 
 ## [Unreleased]
 
+## [1.4.0] - 03-11-2026
+
 ### Added
-- `!digest` (admin only) posts the weekly matchup digest in the reminder channel by hand, for when the Tuesday one failed. Run it once: it saves the PPR ranking again
+- `!digest` (admin only) posts the weekly matchup digest in the reminder channel by hand, for when the Tuesday one failed. Run it once, it saves the PPR ranking again
 
 ### Fixed
-- The Tuesday matchup digest is still posted, without the PPR section, when Google Sheets is down, instead of failing completely
+- The Tuesday matchup digest is still posted but without the PPR section, when Google Sheets is down, instead of failing completely
 
 ## [1.3.1] - 22-10-2026
 
