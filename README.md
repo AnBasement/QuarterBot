@@ -1,6 +1,6 @@
 # QuarterBot
 
-[![CI](https://github.com/AnBasement/quarterbot/actions/workflows/main.yml/badge.svg)](https://github.com/AnBasement/quarterbot/actions/workflows/main.yml) [![codecov](https://codecov.io/gh/AnBasement/quarterbot/branch/main/graph/badge.svg?token=YdZEPsANH4)](https://codecov.io/gh/AnBasement/quarterbot)
+[![CI](https://github.com/AnBasement/quarterbot/actions/workflows/main.yml/badge.svg)](https://github.com/AnBasement/quarterbot/actions/workflows/main.yml) [![codecov](https://codecov.io/gh/AnBasement/QuarterBot/branch/main/graph/badge.svg?token=69iZX4zPWp)](https://codecov.io/gh/AnBasement/QuarterBot)
 
 A Discord bot for ESPN fantasy football leagues. It runs a weekly NFL pick'em game, calculates the league's power ranking (PPR) from ESPN, and posts reminders so nobody forgets their waivers.
 
