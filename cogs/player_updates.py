@@ -1,0 +1,496 @@
+"""Posts NFL injury and status reports to PLAYER_UPDATES_CHANNEL_ID."""
+
+import re
+from core.utils.espn_site import parse_espn_date
+import discord
+from typing import Any
+import asyncio
+import logging
+import pytz
+from discord.ext import commands
+from datetime import datetime, timedelta
+import time
+import requests
+
+
+from cogs.sheets import get_or_create_tab
+from core.utils.discord_helpers import get_text_channel
+from core.utils.espn_helpers import get_league
+from core.utils.espn_site import fetch_json
+from data.channel_ids import ADMIN_CHANNEL_ID, PLAYER_UPDATES_CHANNEL_ID
+from data.discord_ids import load_discord_ids
+from data.config import PICKEM_SHEET_NAME, PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS
+from espn_api.requests.espn_requests import (
+    ESPNAccessDenied,
+    ESPNInvalidLeague,
+    ESPNUnknownError,
+)
+from gspread.worksheet import Worksheet
+
+logger = logging.getLogger(__name__)
+
+ERROR_BACKOFF_SECONDS = 600
+INJURIES_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries"
+INJURIES_PAGE = "https://www.espn.com/nfl/injuries"  # fallback if no player page
+# The coloured bar on the left of each update, by status.
+STATUS_COLOURS = {
+    "Active": discord.Colour.green(),
+    "Questionable": discord.Colour.gold(),
+    "Doubtful": discord.Colour.orange(),
+    "Out": discord.Colour.red(),
+    "Injured Reserve": discord.Colour.dark_red(),
+}
+INJURY_STATUSES = {"Questionable", "Doubtful", "Out", "Injured Reserve"}
+# ESPN's reports write an injury right after the player's name: "Sweat (groin)
+# is active...". Up to four words of the player's name, then the brackets.
+# One word of a player's name: either it starts with a capital letter
+# ("Sweat", "St.", "Smith-Njigba"), or it's one of the small lowercase
+# words some surnames have ("van" and "den" in "van den Berg").
+NAME_WORD = r"(?:[A-Z][\w.'\-]*|van|von|der|den|de|da|di|du|la|le|del)"
+NAME_THEN_BRACKETS = re.compile(rf"^(?:{NAME_WORD}\s){{0,3}}{NAME_WORD} \(([^)]+)\)")
+NFL_TIMEZONE = pytz.timezone("America/New_York")
+GAME_DAYS = {0, 3, 5, 6}  # Monday, Thursday, Saturday, Sunday (Monday=0)
+GAME_DAY_CHECK_SECONDS = 60
+OTHER_DAY_CHECK_SECONDS = 300
+INACTIVE = re.compile(r"\binactive\b", re.IGNORECASE)
+PLAYER_ID_IN_LINK = re.compile(r"/id/(\d+)")  # e.g. ".../player/_/id/4363538/..."
+ROSTER_REFRESH_SECONDS = 1800  # rosters change with pickups and trades
+STATE_TAB = "Player updates"
+
+# The lineup slots whose label isn't simply the injury feed's own: a different
+# label (K is PK in the feed) or a combined slot (RB/WR/TE). Any slot not included
+# (QB, TE, DT, ...) is already identical in the feed. FB is listed with RB because
+# ESPN registers fullbacks as running backs.
+LINEUP_SLOT_POSITIONS: dict[str, set[str]] = {
+    "TQB": {"QB"},
+    "RB": {"RB", "FB"},
+    "RB/WR": {"RB", "FB", "WR"},
+    "WR/TE": {"WR", "TE"},
+    "RB/WR/TE": {"RB", "FB", "WR", "TE"},
+    "OP": {"QB", "RB", "FB", "WR", "TE"},  # Superflex
+    "K": {"PK"},
+    "DL": {"DE", "DT"},
+    "DB": {"CB", "S"},
+    "DP": {"DE", "DT", "LB", "CB", "S"},
+}
+# Lineup slots that never hold a player the injury feed reports on.
+NON_PLAYER_SLOTS = {"D/ST", "HC", "BE", "IR", "ER", "Rookie", ""}
+
+LOOKBACK = timedelta(hours=12)  # how long a report can show up late and still be posted
+
+
+def league_positions(slot_counts: dict[str, int]) -> set[str] | None:
+    """The injury feed positions the league has a lineup slot for, or None if
+    that can't be worked out (then every position is posted)."""
+    positions: set[str] = set()
+    for slot, count in slot_counts.items():
+        if count > 0 and slot not in NON_PLAYER_SLOTS:
+            positions |= LINEUP_SLOT_POSITIONS.get(slot, {slot})
+    return positions or None
+
+
+def is_status_only(report: dict[str, Any]) -> bool:
+    """Whether a report's comment is empty or just repeats its status
+    ("questionable", "out", "ir"): ESPN's automated status entries, which get
+    re-issued with a new ID now and then."""
+    comment = (report.get("shortComment") or "").strip().lower()
+    kind = report.get("type") or {}
+    return comment in {
+        "",
+        (kind.get("description") or "").lower(),
+        (kind.get("abbreviation") or "").lower(),
+    }
+
+
+def is_injury_news(report: dict[str, Any]) -> bool:
+    """Whether a report is worth posting: an injury status, or an "Active"
+    report that names an injury (cleared to play, practice updates). Not the
+    after-game stat lines, not coaches' decisions, and not the plain entries
+    of the official inactive lists or ESPN's automated status-only entries."""
+    if is_status_only(report):
+        return False  # ESPN's automated status entries: re-issued, and can flip
+    comment = report.get("shortComment", "")
+    match = NAME_THEN_BRACKETS.match(comment)
+    if match and match.group(1).lower() == "coach's decision":
+        return False
+    if match is None and INACTIVE.search(comment):
+        return False  # a plain "inactive": no injury named
+    return report.get("status") in INJURY_STATUSES or match is not None
+
+
+def is_wanted_position(report: dict[str, Any], positions: set[str] | None) -> bool:
+    """Whether a report is for a position worth posting. Everything passes if
+    `positions` is None (filter off or unknown), and so does a report with no
+    position."""
+    if positions is None:
+        return True
+    athlete = report.get("athlete") or {}
+    position = (athlete.get("position") or {}).get("abbreviation")
+    return not position or position in positions
+
+
+def player_id(report: dict[str, Any]) -> int | None:
+    """The player's ESPN ID, read from the link to their ESPN page. The same ID
+    the fantasy league uses for its players."""
+    for link_info in report.get("athlete", {}).get("links", []):
+        found = PLAYER_ID_IN_LINK.search(link_info.get("href", ""))
+        if found:
+            return int(found.group(1))
+    return None
+
+
+def build_update(
+    report: dict[str, Any], owner: int | None = None
+) -> tuple[str | None, discord.Embed]:
+    """The Discord message for one report: the ping for `owner` (a Discord user
+    ID) as text, or None if the player isn't on a fantasy team, and the report
+    as an embed, coloured by status."""
+    athlete = report.get("athlete", {})
+    link = next(
+        (
+            link_info["href"]
+            for link_info in athlete.get("links", [])
+            if "playercard" in link_info.get("rel", [])
+        ),
+        INJURIES_PAGE,
+    )
+    player = athlete.get("displayName", "?")
+    team = athlete.get("team", {}).get("abbreviation", "?")
+    position = athlete.get("position", {}).get("abbreviation", "?")
+    status = report.get("status", "?")
+    comment = report.get("shortComment", "")
+    embed = discord.Embed(
+        title=f"{player} ({team}, {position})",
+        url=link,
+        description=f"**{status}**\n{comment}",
+        colour=STATUS_COLOURS.get(status, discord.Colour.light_grey()),
+        timestamp=parse_espn_date(report["date"]),
+    )
+    ping = f"<@{owner}>" if owner is not None else None
+    return ping, embed
+
+
+def advance_marker(
+    last_minute: str, ids_at_last_minute: set[str], report: dict[str, Any]
+) -> tuple[str, set[str]]:
+    """The marker after handling `report`: its minute, and the IDs handled
+    from that minute."""
+    if parse_espn_date(report["date"]) > parse_espn_date(last_minute):
+        return report["date"], {report["id"]}
+    return last_minute, ids_at_last_minute | {report["id"]}
+
+
+def lookback_cutoff(last_minute: str) -> datetime:
+    """The oldest report time still looked at: LOOKBACK before the marker."""
+    return parse_espn_date(last_minute) - LOOKBACK
+
+
+def unhandled_reports(
+    reports: list[dict[str, Any]], handled: dict[str, str], cutoff: datetime
+) -> list[dict[str, Any]]:
+    """The reports not handled yet, oldest first: inside the window and not in
+    `handled`, however old their time is compared with the marker."""
+    fresh = [
+        r
+        for r in reports
+        if parse_espn_date(r["date"]) >= cutoff and r["id"] not in handled
+    ]
+    return sorted(fresh, key=lambda r: parse_espn_date(r["date"]))
+
+
+def seed_handled(
+    reports: list[dict[str, Any]], last_minute: str, ids_at_last_minute: set[str]
+) -> dict[str, str]:
+    """For the first check after the update: the reports the old minute marker
+    counted as handled (before the marker, or at it and in `ids_at_last_minute`)."""
+    last = parse_espn_date(last_minute)
+    return {
+        r["id"]: r["date"]
+        for r in reports
+        if parse_espn_date(r["date"]) < last
+        or (parse_espn_date(r["date"]) == last and r["id"] in ids_at_last_minute)
+    }
+
+
+def prune_handled(handled: dict[str, str], cutoff: datetime) -> dict[str, str]:
+    """`handled` without the reports older than the window."""
+    return {i: d for i, d in handled.items() if parse_espn_date(d) >= cutoff}
+
+
+def handled_to_text(handled: dict[str, str]) -> str:
+    """For the spreadsheet cell: "id@date,id@date". IDs can be negative, dates
+    contain neither "@" nor ",", so this is safe to split again."""
+    return ",".join(f"{i}@{d}" for i, d in sorted(handled.items()))
+
+
+def handled_from_text(text: str) -> dict[str, str]:
+    """The reverse of handled_to_text(). Pieces without an "@" are ignored."""
+    handled: dict[str, str] = {}
+    for item in text.split(","):
+        report_id, at, date = item.partition("@")
+        if at:
+            handled[report_id] = date
+    return handled
+
+
+def seconds_until_next_check(now: datetime) -> int:
+    """Every minute on NFL game days, every 5 minutes otherwise. Game days go
+    by the US Eastern date, so a late Thursday or Monday night game counts."""
+    if now.astimezone(NFL_TIMEZONE).weekday() in GAME_DAYS:
+        return GAME_DAY_CHECK_SECONDS
+    return OTHER_DAY_CHECK_SECONDS
+
+
+class PlayerUpdates(commands.Cog):
+    """Posts player injury updates to PLAYER_UPDATES_CHANNEL_ID as they happen."""
+
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+        self.last_minute: str | None = None
+        self.ids_at_last_minute: set[str] = set()
+        self._failing = False
+        self.task: asyncio.Task[None] | None = None
+        self.owners: dict[int, int] = {}
+        self.positions: set[str] | None = None
+        self._league_loaded_at: float | None = None
+        self._league_failing = False
+        self.handled: dict[str, str] | None = None
+        if PLAYER_UPDATES_CHANNEL_ID is None:
+            logger.info("PLAYER_UPDATES_CHANNEL_ID not set; player update feature off.")
+        else:
+            self.task = self.bot.loop.create_task(self.scheduler())
+
+    async def cog_unload(self) -> None:
+        """Stops the background task."""
+        if self.task is not None:
+            self.task.cancel()
+
+    async def _notify_admin(self, message: str) -> None:
+        """Posts to the admin channel. A failed send is logged, never raised."""
+        admin_channel = get_text_channel(self.bot, ADMIN_CHANNEL_ID)
+        if admin_channel is None:
+            return
+        try:
+            await admin_channel.send(message)
+        except Exception as exc:
+            # Broad on purpose: a failed notification must never stop the caller.
+            logger.warning("Failed to send admin warning in PlayerUpdates: %s", exc)
+
+    async def _state_tab(self) -> Worksheet:
+        """The Player updates tab of the pick'em spreadsheet, created if missing."""
+        tab = await asyncio.to_thread(
+            get_or_create_tab,
+            PICKEM_SHEET_NAME,
+            STATE_TAB,
+            ["last_minute", "ids_at_last_minute", "handled_reports"],
+        )
+        if tab.col_count < 3:
+            # Tabs created before late reports were handled have two columns.
+            await asyncio.to_thread(tab.add_cols, 3 - tab.col_count)
+            await asyncio.to_thread(tab.update, [["handled_reports"]], "C1")
+        return tab
+
+    async def _refresh_league_data(self) -> None:
+        """Reloads who owns which player, and the positions the league starts if
+        PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS is on, at most every 30 minutes.
+
+        Never raises. ESPN is only asked when there's something to use it for:
+        a discord_ids.json to ping from, or the position filter being on. If
+        ESPN fails, the last owners and positions are kept; if nothing was ever
+        loaded, nobody is pinged and every position is posted."""
+        now = time.monotonic()
+        if (
+            self._league_loaded_at is not None
+            and now - self._league_loaded_at < ROSTER_REFRESH_SECONDS
+        ):
+            return
+        self._league_loaded_at = now
+        try:
+            discord_ids = load_discord_ids()
+        except (FileNotFoundError, ValueError):
+            discord_ids = {}  # broken or no file: nobody to ping
+        if not discord_ids and not PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS:
+            self.owners = {}
+            return  # nothing to do with the league
+        try:
+            league = await asyncio.to_thread(get_league)
+        except (
+            requests.exceptions.RequestException,
+            ESPNAccessDenied,
+            ESPNInvalidLeague,
+            ESPNUnknownError,
+            ValueError,
+        ) as exc:
+            logger.warning("Couldn't load the fantasy league: %s", exc)
+            if not self._league_failing:
+                self._league_failing = True
+                kept = "managers"
+                if PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS:
+                    kept = "managers and positions"
+                await self._notify_admin(
+                    f"[player-updates] Couldn't load the fantasy league. Reports go "
+                    f"out with the last known {kept} (without them if none has "
+                    f"loaded yet): {exc}"
+                )
+            return  # keep the last owners and positions
+        self._league_failing = False
+        self.owners = {
+            player.playerId: discord_ids[team.team_id]
+            for team in league.teams
+            if team.team_id in discord_ids
+            for player in team.roster
+        }
+        if PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS:
+            positions = league_positions(league.settings.position_slot_counts)
+            if positions != self.positions:
+                logger.info("Positions the league starts: %s", sorted(positions or []))
+            self.positions = positions
+
+    async def _load_marker(self) -> None:
+        """Reads the saved marker, which is the newest minute handled and the player IDs
+        handled at that minute, and the reports handled in the last 12 hours.
+        `handled` stays None if that last list was never saved (see check_once)."""
+        tab = await self._state_tab()
+        values = await asyncio.to_thread(tab.get, "A2:C2")
+        row = values[0] if values else []
+        self.last_minute = row[0] if row and row[0] else None
+        ids_text = row[1] if len(row) > 1 else ""
+        self.ids_at_last_minute = set(ids_text.split(",")) if ids_text else set()
+        handled_text = row[2] if len(row) > 2 else ""
+        self.handled = handled_from_text(handled_text) if handled_text else None
+
+    async def _save_marker(self) -> None:
+        """Saves a marker of the newest minute handled and player ID handled at
+        that minute, and the reports handled in the last 12 hours."""
+        tab = await self._state_tab()
+        await asyncio.to_thread(
+            tab.update,
+            [
+                [
+                    self.last_minute,
+                    ",".join(sorted(self.ids_at_last_minute)),
+                    handled_to_text(self.handled or {}),
+                ]
+            ],
+            "A2",
+        )
+
+    async def check_once(self) -> None:
+        """Posts the reports that came in since the last check. Raises if ESPN,
+        Google or Discord fails; the scheduler handles that."""
+        channel_id = PLAYER_UPDATES_CHANNEL_ID
+        if channel_id is None:
+            return
+        channel = get_text_channel(self.bot, channel_id)
+        if channel is None:
+            logger.warning("Player updates channel %s not found.", channel_id)
+            return
+
+        if self.last_minute is None:
+            await self._load_marker()
+        await self._refresh_league_data()
+        data = await fetch_json(INJURIES_URL)
+        reports = [
+            r for team in data.get("injuries", []) for r in team.get("injuries", [])
+        ]
+
+        if not reports:
+            return  # an empty feed: nothing to do this round
+        if self.last_minute is None:
+            # First start: take the newest report as the starting point, instead of
+            # flooding the channel with two weeks' worth of reports.
+            newest = max(reports, key=lambda r: parse_espn_date(r["date"]))
+            newest_at = parse_espn_date(newest["date"])
+            self.last_minute = newest["date"]
+            self.ids_at_last_minute = {
+                r["id"] for r in reports if parse_espn_date(r["date"]) == newest_at
+            }
+            self.handled = prune_handled(
+                {r["id"]: r["date"] for r in reports},
+                lookback_cutoff(self.last_minute),
+            )
+            await self._save_marker()
+            logger.info("First player updates check: earlier reports not posted.")
+            return
+
+        start = (
+            self.last_minute,
+            set(self.ids_at_last_minute),
+            None if self.handled is None else dict(self.handled),
+        )
+        if self.handled is None:
+            # First check after the update: treat what the old marker counted as
+            # handled as handled, so nothing old is posted.
+            self.handled = seed_handled(
+                reports, self.last_minute, self.ids_at_last_minute
+            )
+            logger.info(
+                "Seeded the handled list with %d reports from the old marker.",
+                len(self.handled),
+            )
+        try:
+            for report in unhandled_reports(
+                reports, self.handled, lookback_cutoff(self.last_minute)
+            ):
+                # A report that shows up late (older than the marker) is posted
+                # like any other, but must not move the marker back.
+                late = parse_espn_date(report["date"]) < parse_espn_date(
+                    self.last_minute
+                )
+                if is_injury_news(report) and is_wanted_position(
+                    report, self.positions
+                ):
+                    pid = player_id(report)
+                    owner = self.owners.get(pid) if pid is not None else None
+                    ping, embed = build_update(report, owner)
+                    await channel.send(content=ping, embed=embed)
+                self.handled[report["id"]] = report["date"]
+                if not late:
+                    self.last_minute, self.ids_at_last_minute = advance_marker(
+                        self.last_minute, self.ids_at_last_minute, report
+                    )
+        finally:
+            # Save whatever was handled, even if a later send failed, so a
+            # restart doesn't post reports twice.
+            self.handled = prune_handled(
+                self.handled, lookback_cutoff(self.last_minute)
+            )
+            if (self.last_minute, self.ids_at_last_minute, self.handled) != start:
+                await self._save_marker()
+
+    async def _run_check(self) -> int:
+        """Runs one check, tells the admin when it starts and stops failing.
+
+        Returns the seconds to wait before the next check.
+        """
+        try:
+            await self.check_once()
+        except Exception as exc:
+            # Broad on purpose: this is the scheduler loop's boundary, and one
+            # failed check (ESPN, Google or Discord down) must not end it.
+            logger.error("Player updates check failed: %s", exc)
+            if not self._failing:
+                self._failing = True
+                await self._notify_admin(
+                    f"[player-updates] Couldn't check for new updates: {exc}. "
+                    "Retrying every 10 minutes; you'll be told when it works again."
+                )
+            return ERROR_BACKOFF_SECONDS
+
+        if self._failing:
+            self._failing = False
+            await self._notify_admin(
+                "[player-updates] Checking for new moves works again."
+            )
+        return seconds_until_next_check(datetime.now(NFL_TIMEZONE))
+
+    async def scheduler(self) -> None:
+        """Checks for new updates. Runs forever."""
+        await self.bot.wait_until_ready()
+        while True:
+            await asyncio.sleep(await self._run_check())
+
+
+async def setup(bot: commands.Bot) -> None:
+    """Loads the cog (called by discord.py's load_extension)."""
+    await bot.add_cog(PlayerUpdates(bot))

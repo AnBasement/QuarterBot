@@ -1,0 +1,7 @@
+coverage:
+  status:
+    project:
+      default:
+        target: 50   # Minimum for whole project
+      patch:
+        target: 20   # Minimum for new lines in PR

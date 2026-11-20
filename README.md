@@ -1,0 +1,361 @@
+# QuarterBot
+
+[![CI](https://github.com/AnBasement/quarterbot/actions/workflows/main.yml/badge.svg)](https://github.com/AnBasement/quarterbot/actions/workflows/main.yml) [![codecov](https://codecov.io/gh/AnBasement/quarterbot/branch/main/graph/badge.svg?token=YdZEPsANH4)](https://codecov.io/gh/AnBasement/quarterbot)
+
+A Discord bot for ESPN fantasy football leagues. It runs a weekly NFL pick'em game, calculates the league's power ranking (PPR) from ESPN, and posts reminders so nobody forgets their waivers.
+
+QuarterBot was originally built for the private server of the fantasy league Fest i Vest, as a project to learn Python, using AI as an assistant. As I've used Render with UptimeRobot to host it, this README is based on that setup. If you use a different host or run it locally, setup won't be identical.
+
+## Features
+
+Commands use English names by default (e.g. `!results`), with the original Norwegian names kept as permanent aliases (e.g. `!resultater`). Both work for everyone, no setup required.
+
+### Commands
+
+The prefix is `!`. Admins are the users listed in `ADMIN_IDS`. Each user can run one command every five seconds.
+
+| Command | Who | What it does |
+|---|---|---|
+| `!ping` | Everyone | Checks that the bot is up |
+| `!streamer [year]` | Everyone | The Best Streamer ranking, for this season or an earlier one |
+| `!ppr` | Admins | Posts the PPR ranking, then saves it to the spreadsheet |
+| `!games [week]` | Admins | Posts the week's games right away (alias `!kamper`) |
+| `!export` | Admins | Exports the picks on the posted games to the spreadsheet (alias `!eksporter`) |
+| `!results [week]` | Admins | Scores a week's picks and posts the standings (alias `!resultater`) |
+| `!digest` | Admins | Posts the weekly matchup digest by hand, if the Tuesday one failed |
+
+The bot runs `!export` and `!results` itself (at the pick lock and from Tuesday 18:00), so you normally only use them to rerun a week. Both are safe to rerun. Your own commands from `custom_commands.json` are added to this list, see [Custom commands](#custom-commands).
+
+### Weekly Pick'em
+
+The league's weekly winner-pick pool. Each week, participants pick a winner by reacting with a team's logo on messages representing that week's games. This used to be tracked manually, the bot now handles the whole thing.
+
+The feature's display name is configurable via `GAME_NAME` (default `Weekly Pick'em`).
+
+- Posts each week's games automatically, one message per game
+- Reminds everyone before the Thursday game (two hours before kickoff) and the first Sunday game (one hour before), moved to 22:00 the evening before if that falls in the night (22:00-08:00)
+- Integrated with the Google Sheets API
+- Records participants' picks and writes them to a Sheets tab
+- Locks picks automatically at the first Sunday kickoff (the first game of the week in the playoffs), so later picks don't count. Thursday and Saturday games are on the honor system
+- Fetches results from ESPN's API and color-codes the Sheets tab based on whether a participant guessed correctly
+- Tracks participants' picks and scores weekly and across the season
+- Posts weekly and season results to a dedicated Discord channel
+- Bot automatically reacts to each game with each team's emoji, so participating players only need a single click to make their pick.
+
+**Team logos:** the bot works out of the box with a built-in set of generic Unicode emoji for all 32 NFL teams plus a tie/draw, no setup needed, and Discord reactions require a real emoji either way. If your server has uploaded its own custom team emoji, the bot automatically prefers those instead, matched by name. To use your own logos, upload custom emoji to your server (Server Settings → Emoji) named exactly:
+
+`ne` `buf` `nyj` `mia` `bal` `cin` `cle` `pit` `hou` `ind` `jax` `ten` `den` `kc` `lv` `lac` `dal` `nyg` `phi` `was` `chi` `det` `gb` `min` `atl` `car` `no` `tb` `ari` `lar` `sf` `sea` `draw`
+
+No code or environment variable changes needed: the bot checks for a matching emoji name on its own server automatically.
+
+### PPR
+
+PPR is the fantasy league's own "power ranking". It attempts to capture how well a team did over a season, based on average points per game, the highest and lowest single-game scores, and win rate, normalized against the rest of the league's results. This is heavily inspired/ripped off from the Oklahomiraqi League's OPR system. The bot calculates it from your ESPN league's results, so it works for any league out of the box, it only requires the ESPN settings.
+
+The formula, in plain terms:
+
+1. **Raw score** = `(avg points per game × 6) + ((highest + lowest single-game score) × 2) + (win% × 200 × 2)`, all divided by 10
+2. **Final PPR** = that raw score, divided by the league's average raw score for the season
+
+Dividing by the league average in step 2 normalizes the number so `1.0` always means "exactly league average", which keeps PPR comparable from one season to the next even with fluctuating overall scoring levels. Only regular-season games count (playoffs are left out), and only finished weeks, so PPR builds up over the season. By design it can vary a lot the first few weeks. A tie counts as half a win.
+
+**Career PPR** is the average of a manager's season PPRs over finished seasons, shown with the number of seasons. Next to it is **career value**: how far above or below average (`1.0`) they've been each season, added up, so a long run of good seasons counts for more than one great one.
+
+- The weekly recap posts the ranking after every regular-season week, and the season-end recap adds career PPR; `!ppr` (admins only) posts it on demand
+- Managers are followed by their ESPN account, so a renamed team keeps its history
+- The bot keeps two tabs in the pick'em spreadsheet, both created automatically if they do not exist:
+    - `PPR history`: every ranking posted by the weekly recap or by `!ppr`, which the change arrows compare against
+    - `PPR`: every season's numbers (games, wins, points per game, highest and lowest game, raw score and PPR), one row per manager per season, for anyone who wants to look up an old season or build their own spreadsheet on top of it
+
+### Best Streamer award
+
+`!streamer` posts the Best Streamer ranking: which manager is getting the most out of streaming D/ST, K, TE and QB, meaning picking up a player for a week or two instead of holding him. Anyone can run it. It counts the weeks played so far (so early in the season few managers qualify yet), reads them from ESPN and writes nothing to the spreadsheet.
+
+- A **streamed start** is a start in a run of two weeks or less with the same player. Each one is compared with the **waiver wire** that week: the average points of the three best-projected free agents at the position (by ESPN's last projection before their game)
+- A manager qualifies in a position with at least 6 streamed starts. Their score there is the average points over the waiver wire per streamed start
+- The overall ranking is the average of a manager's position scores, for managers who qualified in at least two positions. Streaming more positions gives no bonus, it only breaks a tie
+- Also posted: the best single pickup, the manager with the most streamed starts above the waiver wire, and the best streaming week
+- It measures results, not decisions: a lost waiver claim can't be seen, and quarterback streams include injury cover
+- Positions your league doesn't start are skipped. Positions with more than one starter (two QBs, two TEs, or a superflex slot for QB) aren't supported yet and are left out, with a note
+- `!streamer 2024` shows a finished season. Tested on 2020 and later; earlier seasons may work too, but haven't been tried
+
+### Custom commands
+
+Add your own `!commands` that reply with a fixed message, like links or inside jokes. Copy `custom_commands.example.json` to `custom_commands.json` in the bot's root folder and edit it:
+
+```json
+{
+  "rules": "League rules: https://example.com/your-league-rules",
+  "doink": "DOINK"
+}
+```
+
+Each entry is `"command name": "reply"`, so the example above gives `!rules` and `!doink`. On Render, upload the file as a Secret File named `custom_commands.json`. The file is optional, and a broken one is logged and skipped rather than stopping the bot. Built-in command names (like `export`) can't be used.
+
+### Transactions
+
+Posts every add, drop, waiver claim and completed trade in the ESPN league to its own channel, within about a minute of it happening (trade proposals aren't posted). Optional: set `TRANSACTIONS_CHANNEL_ID` to switch it on. The bot remembers the last move it posted in a `Transactions` tab it creates in the pick'em spreadsheet, so a restart doesn't post anything twice.
+
+### Player updates
+
+Posts player updates (injury statuses, mid-game reports, cleared to play) from ESPN's public injury reports to a specified channel, each as a box coloured by status with the player's name linking to their ESPN page. Checks every minute on game days and every five minutes on non-game days. Does not post coach's decision updates, game stat lines, plain inactive-list entries or ESPN's bare status updates. Pings league managers if the player is on their team (requires `discord_ids.json` and ESPN league settings). Keeps track of what has been posted by using the `Player updates` tab in the pick'em spreadsheet. Entirely optional: set `PLAYER_UPDATES_CHANNEL_ID` to turn on.
+
+If `PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS` is set to `true`, only updates for players in positions your league starts are posted.
+
+### Weekly recap
+
+Every Tuesday at 18:00 (league time), the bot reminds everyone not to forget their waivers before the new week starts, then posts a recap of the fantasy week just played: every matchup's score, the week's awards (nail-biter, top and lowest scorer, best bench, over- and underachiever compared to ESPN's projections), the current win and loss streaks of three or more, and the PPR ranking with changes since last week. Then a preview of the coming week's matchups, or, after the final week, the final standings with medals. The season-end recap shows the final season PPR and each manager's career PPR (average over finished seasons, number of seasons and career value), then the Streamer of the Year: the winner, places 2 and 3, the best pickup and a pointer to `!streamer`.
+
+If the Tuesday recap fails, `!digest` (admins only) posts it by hand in the reminder channel. Run it once, since it saves the PPR ranking again.
+
+### Inactive-player alerts
+
+About an hour before kickoff, the bot checks every team's starting lineup for players who are Out, Doubtful, Inactive or suspended, and warns the manager (kept out of the night, like the reminders). With `discord_ids.json` it pings the right person; without it, it posts one general `@everyone` message.
+
+### Release announcements
+
+Posts the latest release notes when the bot runs a new version, so your server knows what changed. The first time the bot starts on a new version, it posts that version's notes from the [CHANGELOG](CHANGELOG.md) to its specified channel, without pinging anyone. It remembers which version it last announced in an `Announced version` tab it creates in the pick'em spreadsheet, so restarts and redeploys don't post anything twice. The notes are posted in English (the CHANGELOG's language); the heading line is configurable with `RELEASE_ANNOUNCEMENT_TEMPLATE`. Optional feature: set `CHANGELOG_CHANNEL_ID` to switch it on.
+
+## Planned features
+
+### Trivia
+
+A trivia cog is planned.
+
+- Participants have 60 seconds to answer; faster answers earn more points
+- The leaderboard is tracked in an external Sheets document
+- Support for single questions and 10-question rounds
+- Multiple categories, including a general NFL category and one per decade
+
+## Getting started
+
+This guide takes you from nothing to a running bot on your own Discord server. It assumes you host the bot on [Render](https://render.com), but any host that can run Python works, including running it locally. If you're unfamiliar, set aside an hour or two the first time: most of it is clicking through Discord's, Google's and ESPN's websites.
+
+If you get stuck, check [Troubleshooting](#troubleshooting) below, or open an issue.
+
+### 1. What you need before you start
+
+- A Discord server where you're an administrator
+- A Google account (for the spreadsheet)
+- An ESPN fantasy football league
+- A GitHub account (to copy the code) and a Render account (to run it). Both can be created as part of the steps below.
+
+You'll collect a handful of IDs, keys and files along the way. Paste them into a text file as you go: step 5 puts them all in one place.
+
+### 2. Create the Discord bot
+
+A Discord bot is an "application" you create on Discord's developer site, then invite to your server.
+
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and click **New Application**. The name you give it is the bot's name in your server, e.g. "QuarterBot".
+2. Open the **Bot** tab:
+    - Click **Reset Token** and copy the token. This is your `DISCORD_TOKEN`. Treat it like a password: anyone who has it can control your bot.
+    - Turn on **Message Content Intent** and **Server Members Intent**. "Intents" are permissions for what the bot is allowed to see. Without these two it starts, but ignores every command.
+3. Open **OAuth2 → URL Generator**:
+    - Under **Scopes**, tick `bot`. A **Bot Permissions** box appears below it.
+    - Tick **View Channels**, **Send Messages**, **Embed Links**, **Read Message History**, **Add Reactions** and **Mention Everyone**.
+    - Open the generated URL at the bottom of the page, pick your server and click **Authorize**. The bot shows up in the member list, offline until you start it.
+
+Then collect some IDs from Discord:
+
+1. Turn on **Developer Mode** in Discord (User Settings → Advanced). This adds a *Copy ID* option when you right-click channels and users.
+2. Pick or create three text channels: one for reminders, one where the weekly games are posted, and one for admin warnings (recommended to be admin-only). Right-click each → **Copy Channel ID**. These are `REMINDER_CHANNEL_ID`, `GAME_CHANNEL_ID` and `ADMIN_CHANNEL_ID`.
+3. Right-click yourself → **Copy User ID**. This goes in `ADMIN_IDS` (add more admins separated by commas). Admins can run commands like `!export` and `!results`.
+
+### 3. Set up Google Sheets access
+
+The bot reads and writes Google Sheets as a "service account": a robot Google user that belongs to you. You create it once, then share your spreadsheet with it like you would with a person. This is the fiddliest step, so take it slowly.
+
+1. Go to the [Google Cloud Console](https://console.cloud.google.com/) and create a new project (free). Any name works.
+2. Go to **APIs & Services → Library**, and enable both **Google Sheets API** and **Google Drive API**. The bot needs Drive to find your spreadsheet by name.
+3. Go to **APIs & Services → Credentials → Create credentials → Service account**. Give it a name and click **Done** (the optional steps can be skipped).
+4. Open the new service account → **Keys → Add key → Create new key → JSON**. A file downloads. Rename it to `credentials.json`. Keep it secret: it gives access to every sheet shared with this account.
+5. On the service account's page, copy its email address (it ends in `.iam.gserviceaccount.com`). You'll share your sheets with it below.
+
+Now create the spreadsheet:
+
+- **Pick'em spreadsheet (required):** the bot's own spreadsheet. Create a new, empty spreadsheet. In its first tab:
+    1. Click the row number **2** on the left to select the whole row, then set Format → Number → **Plain text**. Do this before typing the IDs: Discord IDs are 18–19 digits long, and Sheets could otherwise round them, so the bot would never recognize anyone's picks.
+    2. Row 1: a label in `A1` (e.g. `Name`), then one participant's name per column from `B1`.
+    3. Row 2: `Discord ID` in `A2`, then each participant's Discord user ID below their name.
+
+    Leave everything below row 2 empty. The bot writes each week's games there itself, and creates a `State` tab on its first start to remember which weeks it has handled. The transactions and player updates channels keep their own small tabs here too, also created automatically.
+
+**Share the spreadsheet** with the service account's email address (Share → paste the address → **Editor**). The bot finds sheets by their name, so give it a name that no other sheet shared with the service account has. You'll put its name in `PICKEM_SHEET_NAME`.
+
+### 4. Connect to ESPN
+
+- **`ESPN_LEAGUE_ID`:** open your league on [ESPN Fantasy](https://fantasy.espn.com/). The address in your browser contains `leagueId=` followed by a number. That number is your league ID.
+- **`ESPN_YEAR`:** the season, e.g. `2026`. Update it when a new season starts.
+- **`ESPN_S2` and `ESPN_SWID`** (only for private leagues, which most are): ESPN only shows a private league to logged-in members, so the bot borrows your login from two browser cookies.
+    1. Log in to ESPN Fantasy in your browser and open your league.
+    2. Open the browser's developer tools (in Chrome: View → Developer → Developer Tools), then **Application → Cookies → `https://fantasy.espn.com`**.
+    3. Copy the value of `espn_s2` into `ESPN_S2`, and `SWID` into `ESPN_SWID` (keep the curly braces).
+
+    These cookies are as private as your ESPN password. They expire eventually; if ESPN features stop working and the admin channel reports ESPN errors, copy fresh ones.
+
+**Optional: `discord_ids.json`.** Tells the bot which Discord user owns which ESPN team, so injury warnings ("you have inactive players in your lineup") ping the right person, and player updates ping the manager who has the player. Find each team's ID in the address of its ESPN team page (`teamId=`), and create the file like this, where the second number is the Discord ID of the team manager:
+
+```json
+{
+  "1": "123456789012345678",
+  "2": "234567890123456789"
+}
+```
+
+Without the file, everything else works: injury warnings are sent as one general @everyone message instead of pinging each manager, and player updates are posted without pings.
+
+### 5. Settings (environment variables)
+
+Settings are given to the bot as "environment variables": named values like `GAME_CHANNEL_ID=123...` that the bot reads when it starts. On Render you enter them on a settings page; on your own computer they go in a file called `.env`.
+
+[`.env.example`](.env.example) lists every setting with a short explanation. These are the most important ones:
+
+| Variable | Required | Description |
+|---|---|---|
+| `DISCORD_TOKEN` | Yes | Bot token from the Discord Developer Portal |
+| `ADMIN_IDS` | Yes | Comma-separated list of Discord user IDs with admin access |
+| `REMINDER_CHANNEL_ID`, `GAME_CHANNEL_ID`, `ADMIN_CHANNEL_ID` | Yes | Discord channel IDs the bot posts to |
+| `GAME_NAME` | No (default `Weekly Pick'em`) | Display name for the weekly pick'em game |
+| `LEAGUE_NAME` | No (default `The League`) | Display name for the fantasy league itself, used e.g. in the season-end standings banner |
+| `LEAGUE_TIMEZONE` | No (default `Europe/Oslo`) | IANA timezone name used for reminder scheduling and date calculations. See the [IANA timezone list](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) for valid values (e.g. `America/New_York`, `Europe/London`) |
+| `GOOGLE_SHEETS_KEYFILE` | No (default `credentials.json`) | Path to the Google service account key |
+| `PORT` | No (default `8080`) | Port for the small keep-alive web server. Most hosts set this automatically, so you normally don't set it yourself |
+| `ESPN_LEAGUE_ID`, `ESPN_YEAR`, `ESPN_S2`, `ESPN_SWID` | Yes | Access to the ESPN Fantasy API for the league |
+| `PICKEM_SHEET_NAME` | No (default `Pick'em`) | Name of the pick'em spreadsheet. The bot finds it by name, so it must be unique among the sheets shared with its service account |
+| `WEEKLY_POINTS_SHEET_LABEL`, `SEASON_TOTAL_SHEET_LABEL`, `DRAW_SHEET_LABEL` | No (defaults `Weekly points`, `Season total`, `Tie`) | Labels the pick'em feature writes into its sheet and reads back later. If your sheet already contains rows with other labels, set these to match exactly, or season totals restart from zero |
+| `FANTASY_FINAL_WEEK` | No (default `17`) | Final week of the league's ESPN fantasy season (regular + playoff weeks); check your own league's ESPN settings |
+| `TRANSACTIONS_CHANNEL_ID` | No | Channel for league moves (adds, drops, waiver claims, trades). Leave it out to switch the feature off |
+| `PLAYER_UPDATES_CHANNEL_ID` | No | Channel for NFL player updates (injury updates, mid-game injuries, cleared to play). Leave it out to switch the feature off |
+| `PLAYER_UPDATES_ONLY_LEAGUE_POSITIONS` | No (default `false`) | Set to `true` to only post updates for positions the league uses |
+| `CHANGELOG_CHANNEL_ID` | No | Channel for the release notes when the bot first runs a new version. Leave it out to switch the feature off |
+
+**Bot-posted message text:** everything the bot says in Discord (reminders, confirmations, the weekly matchup digest, inactive-player alerts, and so on) is also configurable, each with a neutral English default. See `.env.example` for every variable name, its default, and any `{placeholder}` values a message fills in. No code changes are needed to run the bot in your own language or wording.
+
+Besides the settings, the bot reads these files from its folder:
+
+- `credentials.json`: the Google key from step 3
+- `discord_ids.json` (optional): ESPN team → Discord user, from step 4
+- `custom_commands.json` (optional): your own commands, see [Custom commands](#custom-commands)
+
+> **Keep these private.** `.env`, `credentials.json` and `discord_ids.json` contain your bot token, Google key, ESPN login and your members' Discord IDs. They're listed in `.gitignore`, so git leaves them out of your commits. Don't remove them from `.gitignore` or add them with `git add -f`: a fork of a public repository is always public, so anything committed there can be seen by anyone. If a token or key ever ends up on GitHub, reset it right away (Discord: **Reset Token**; Google: delete the key and create a new one).
+
+### 6. Run it on Render
+
+1. **Copy the code:** on this repository's GitHub page, click **Fork**. This gives you your own copy, which Render will run.
+2. **Create the service:** sign up at [Render](https://render.com) with your GitHub account, then **New → Web Service** and pick your fork.
+3. **Fill in:**
+    - Runtime: **Python 3**
+    - Build command: `pip install -r requirements.txt`
+    - Start command: `python -m core.bot`
+    - Health Check Path (under **Advanced**): `/`. Render then restarts the bot if it loses its connection to Discord
+4. **Environment:** add every setting from step 5, plus `PYTHON_VERSION=3.12` (otherwise Render picks its own Python version). If you've collected them in a `.env`-style text file, Render's **Add from .env** option lets you paste them all at once.
+5. **Secret Files** (in the same Environment page): upload `credentials.json`, and `discord_ids.json` / `custom_commands.json` if you made them. Use exactly those file names.
+6. **Deploy**, and watch the logs. After a minute or so you should see `Bot logged in as …`, and the bot comes online in Discord. Try `!ping`.
+
+On its first start the bot creates the `State` tab in your pick'em sheet, then posts this week's games in your game channel. From then on it runs on its own: games are posted each week, picks are locked at the first Sunday kickoff, and from Tuesday 18:00, once all the week's games are final, the week is scored and next week's games are posted.
+
+**About Render's free plan:** a free web service goes to sleep after a period without web traffic, and a sleeping bot is offline in Discord. The bot runs a small web page (it says `Bot is running!` while connected to Discord, and returns an error otherwise) for exactly this reason: either use a paid instance, or point a free uptime-monitoring service at your Render URL so it's visited every few minutes. Check Render's current plans, as their free tier changes from time to time.
+
+**Running it on your own computer instead** (useful for testing): install Python 3.12, then
+
+```bash
+git clone <your fork's URL>
+cd <the folder it created>
+python -m venv .venv
+source .venv/bin/activate    # on Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env         # then fill in .env
+python -m core.bot
+```
+
+Put `credentials.json` (and the optional JSON files) in the same folder. Don't run the same bot token on your computer and on Render at the same time: both copies would answer every command.
+
+### Troubleshooting
+
+- **The bot is online but ignores commands:** Message Content Intent or Server Members Intent is off (step 2).
+- **The bot stops at startup with `Required environment variable … is not set`:** one of the required settings is missing. The message names it.
+- **Every command gets two replies:** the same bot token is running in two places, e.g. on Render and on your computer.
+- **The admin channel says it failed to load the State sheet, and no games are posted:** the bot can't open your pick'em spreadsheet. Check that `PICKEM_SHEET_NAME` matches the spreadsheet's name exactly, and that the sheet is shared with the service account's email address.
+- **Your picks are never recognized:** the Discord IDs in row 2 of the pick'em sheet were rounded. Format the cells as plain text and paste the IDs again (step 3).
+- **ESPN features stop working mid-season:** the `ESPN_S2`/`ESPN_SWID` cookies might have expired. Copy fresh ones (step 4).
+
+## Project structure
+
+```text
+├── cogs/                           # Discord bot modules
+│   ├── announcements.py            # Release notes when a new version runs
+│   ├── fantasy_reminders.py        # Waiver reminder, weekly recap, inactive-player alerts
+│   ├── pickem.py                   # Core logic for the pick'em game
+│   ├── player_updates.py           # NFL injury and status reports
+│   ├── ppr.py                      # Updates the PPR leaderboard
+│   ├── responses.py                # Custom commands from custom_commands.json
+│   ├── sheets.py                   # Google Sheets integration
+│   ├── streamer.py                 # The Best Streamer award
+│   ├── transactions.py             # League moves (adds, drops, trades)
+│   └── utility.py                  # Small helper commands
+├── core/                           # Core functionality
+│   ├── bot.py                      # Bot initialization
+│   ├── decorators.py               # Admin-permission checks
+│   ├── errors.py                   # Bot error types
+│   ├── keep_alive.py               # Web server for uptime
+│   ├── logging_config.py           # Centralized logging setup
+│   └── utils/                      # Helper utilities
+│       ├── discord_helpers.py      # Shared helpers for discord.py objects
+│       ├── espn_helpers.py         # Shared helpers for ESPN's API
+│       ├── espn_site.py            # Fetching from ESPN's public site API
+│       ├── global_cooldown.py      # Cooldown for command spam
+│       └── quiet_hours.py          # Keeps reminders out of the night
+├── data/                           # Static data and configuration
+│   ├── channel_ids.py              # Discord channel IDs (from env vars)
+│   ├── config.py                   # Other env-var-driven configuration
+│   ├── discord_ids.py              # Loads discord_ids.json (ESPN team → Discord user)
+│   ├── messages.py                 # Bot-posted message text (from env vars)
+│   └── teams.py                    # NFL team data and emojis
+├── tests/                          # Test suite (one test_*.py per module)
+├── .env.example                    # Every environment variable, with defaults
+└── custom_commands.example.json    # Example format for custom commands
+```
+
+## Configuration
+
+The project uses the following configuration files:
+
+- `pyproject.toml`: settings for the development tools (ruff and mypy)
+- `requirements.txt`: the Python packages the bot needs to run (what the host installs), plus the development tools (pytest, black, ruff, mypy), all pinned to exact versions
+- `.env`: environment variables (not in the repo)
+- `credentials.json`: Google Sheets API access (not in the repo)
+
+## Development
+
+The project follows these development practices:
+
+- Type hints, checked with mypy
+- Tests with pytest for every cog, with an in-memory fake spreadsheet for the code that writes to Google Sheets
+- Code formatted with black, and quality checks with ruff and mypy
+- CI/CD through GitHub Actions
+
+To contribute, see [CONTRIBUTING.md](.github/CONTRIBUTING.md) for the workflow and the checks to run before opening a pull request. Alternatively, file an issue.
+
+## Testing
+
+Run the same four checks as CI before opening a pull request:
+
+```bash
+black .           # formatting
+ruff check .      # linting
+mypy .            # type checking
+python -m pytest  # the test suite
+```
+
+## Acknowledgements
+
+This project drew inspiration from [Red-DiscordBot](https://github.com/Cog-Creators/Red-DiscordBot), for ideas around cogs and bot structure.
+[Claude](https://claude.ai) has been very helpful throughout the bot's development, especially when it comes to writing test files and docstrings. Most of the code is written by hand, and anything Claude writes is reviewed before it's committed.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for what has changed in each release.
+
+## License
+
+This project is licensed under the GNU General Public License v3.0. See the [LICENSE](LICENSE) file for details.
